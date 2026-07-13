@@ -46,10 +46,11 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 llm = LLM(
-    model=os.getenv("MODEL_NAME", "openrouter/anthropic/claude-3.5-sonnet"),
+    model=os.getenv("MODEL_NAME", "openrouter/meta-llama/llama-3.3-70b-instruct"),
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
     temperature=0.3,
+    max_tokens=2000,
 )
 
 # ---------------------------------------------------------------------------
