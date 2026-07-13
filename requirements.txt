@@ -1,0 +1,9 @@
+crewai==0.86.0
+crewai-tools==0.17.0
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-dotenv==1.0.1
+pydantic==2.9.2
+apscheduler==3.10.4
+litellm==1.48.0
+pytest==8.3.3
