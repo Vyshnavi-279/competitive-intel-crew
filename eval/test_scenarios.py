@@ -66,7 +66,7 @@ def _make_cited_briefing_response() -> dict:
             "sources_skipped": [],
             "total_steps": 4,
             "token_estimate": None,
-            "status": "completed",
+            "status": "pending_review",
         },
         "sections": [
             {
@@ -115,7 +115,7 @@ def _make_partial_failure_response() -> dict:
         "competitor X layoffs",
         "startup Y shutdown",
     ]
-    base["metadata"]["status"] = "completed"
+    base["metadata"]["status"] = "pending_review"
     return base
 
 
@@ -227,8 +227,8 @@ class TestFullWeeklyBriefingHappyPath:
                     f"  citations:  {citations}"
                 )
 
-        # ── Run completed successfully ───────────────────────────────────────
-        assert data["metadata"]["status"] == "completed"
+        # ── Run completed successfully (awaiting human review) ───────────────
+        assert data["metadata"]["status"] == "pending_review"
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +262,9 @@ class TestSourceFailureHandling:
         data = response.json()
         meta = data["metadata"]
 
-        # ── Status is "completed", not "failed" ──────────────────────────────
-        assert meta["status"] == "completed", (
-            f"Expected status='completed' on partial source failure, "
+        # ── Status is "pending_review", not "failed" ─────────────────────────
+        assert meta["status"] == "pending_review", (
+            f"Expected status='pending_review' on partial source failure, "
             f"got status={meta['status']!r}"
         )
 
@@ -413,14 +413,10 @@ class TestRunawayGuardRespectsCap:
                 results = []
                 for item in data.get("organic", []):
                     results.append(
-                        f"- {item.get('title','')}
-  {item.get('link','')}
-  {item.get('snippet','')}"
+                        f"- {item.get('title', '')}\n  {item.get('link', '')}\n  {item.get('snippet', '')}"
                     )
                 search_count += 1
-                return "
-
-".join(results) if results else f"[SafeSearchTool] No results for: '{query}'"
+                return "\n\n".join(results) if results else f"[SafeSearchTool] No results for: '{query}'"
             except Exception as exc:
                 skipped_sources.append(query)
                 return f"[SafeSearchTool] Source unreachable, skipped. Query: '{query}' -- {exc}"

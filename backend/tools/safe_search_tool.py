@@ -103,6 +103,13 @@ class SafeSearchTool(BaseTool):
 
         except Exception as exc:
             self.skipped_sources.append(query)
+            # Give a more actionable message for 403 (invalid/expired Serper key)
+            if "403" in str(exc):
+                return (
+                    f"[SafeSearchTool] Serper API key is invalid or unauthorized (403). "
+                    f"Get a valid key at https://serper.dev and set SERPER_API_KEY in .env. "
+                    f"Skipping query: '{query}'"
+                )
             return (
                 f"[SafeSearchTool] Source unreachable, skipped. "
                 f"Query: '{query}' -- {exc}"
