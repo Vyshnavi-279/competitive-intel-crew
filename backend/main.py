@@ -10,13 +10,24 @@ POST  /api/runs/{run_id}/publish    Flip status from "pending_review" → "publi
 POST  /api/runs/{run_id}/reject     Flip status from "pending_review" → "rejected"
                                     with an optional free-text reason.
 GET   /api/health                   Liveness probe.
+GET   /                             Root — basic service info (useful for host health checks).
 
 Start the server
 ----------------
     uvicorn backend.main:app --reload --port 8000
 
 Requires a populated .env file (see backend/config.py for required keys).
-CORS is enabled for http://localhost:3000 (the React dev server).
+
+CORS
+----
+Allowed origins are read from the ALLOWED_ORIGINS env var (comma-separated),
+in addition to localhost:3000 for local dev. Set ALLOWED_ORIGINS on your
+backend host (Render, Railway, etc.) to your deployed frontend URL(s), e.g.:
+
+    ALLOWED_ORIGINS=https://competitive-intel-crew.netlify.app,https://your-app.vercel.app
+
+If ALLOWED_ORIGINS is not set, only localhost:3000 is allowed — deployed
+frontends will get CORS errors until this is configured.
 
 Scheduler
 ---------
@@ -28,6 +39,7 @@ API event loop — all crew work runs in APScheduler's thread-pool executor.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -106,10 +118,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow the React dev server to call the API.
+# CORS — allow local dev plus any deployed frontend URL(s) from ALLOWED_ORIGINS.
+_extra_origins = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", *_extra_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -148,6 +166,12 @@ class RejectResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@app.get("/", tags=["meta"])
+async def root() -> Dict[str, str]:
+    """Basic service info. Useful for host-level health checks that hit '/'."""
+    return {"status": "ok", "service": "Competitive Intel Crew API"}
 
 
 @app.get("/api/health", tags=["meta"])

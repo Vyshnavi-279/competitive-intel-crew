@@ -59,7 +59,7 @@ def _validate() -> None:
     if missing:
         raise RuntimeError(
             "Missing required environment variables — set them in your .env "
-            f"file or export them before starting the server:\n"
+            "file or export them before starting the server:\n"
             + "\n".join(f"  • {k}" for k in missing)
         )
 
