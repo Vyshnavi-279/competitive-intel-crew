@@ -215,15 +215,35 @@ def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 def update_run_status(run_id: str, status: str) -> bool:
-    """Update the status column for *run_id*.
+    """Update the status column for *run_id* and patch it inside briefing_json.
 
     Returns True if a row was updated, False if run_id was not found.
     Used by the publish and reject endpoints.
+
+    Both the `status` column AND the `briefing_json` blob are updated so that
+    subsequent calls to ``get_run()`` return the current status rather than
+    the stale value baked into the JSON at save time.
     """
     with _connect() as conn:
+        # Fetch the current briefing_json to patch the status inside it.
+        row = conn.execute(
+            "SELECT briefing_json FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return False
+
+        try:
+            blob = json.loads(row["briefing_json"])
+            if "metadata" in blob:
+                blob["metadata"]["status"] = status
+            updated_json = json.dumps(blob)
+        except Exception:
+            # If JSON parsing fails for any reason, update the column only.
+            updated_json = row["briefing_json"]
+
         cursor = conn.execute(
-            "UPDATE runs SET status = ? WHERE run_id = ?",
-            (status, run_id),
+            "UPDATE runs SET status = ?, briefing_json = ? WHERE run_id = ?",
+            (status, updated_json, run_id),
         )
         conn.commit()
     return cursor.rowcount > 0
@@ -247,6 +267,99 @@ def log_event(run_id: str, event_text: str) -> None:
             (run_id, event_text, _utcnow()),
         )
         conn.commit()
+
+
+def get_kpis() -> Dict[str, Any]:
+    """Compute 5 business KPIs from the runs table.
+
+    KPIs
+    ----
+    1. run_success_rate      — % of runs that reached pending_review/published/rejected
+                               (i.e. did not fail), out of all finished runs.
+    2. citation_rate         — average fraction of claims that carry at least one
+                               citation across all non-failed runs (from briefing_json).
+    3. source_coverage       — average sources_used per completed run.
+    4. avg_duration_seconds  — mean wall-clock run time for completed runs.
+    5. publish_rate          — % of pending_review+published+rejected runs that were
+                               ultimately published.
+
+    Returns a dict safe to serialise directly as JSON.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT run_id, status, sources_used, duration_seconds, briefing_json
+            FROM   runs
+            ORDER  BY started_at DESC
+            LIMIT  200
+            """
+        ).fetchall()
+
+    if not rows:
+        return {
+            "run_success_rate": 0.0,
+            "citation_rate": 0.0,
+            "source_coverage": 0.0,
+            "avg_duration_seconds": 0.0,
+            "publish_rate": 0.0,
+            "total_runs": 0,
+        }
+
+    total = len(rows)
+    successful = [r for r in rows if r["status"] in ("pending_review", "published", "rejected")]
+    failed = [r for r in rows if r["status"] == "failed"]
+    published = [r for r in rows if r["status"] == "published"]
+    reviewable = [r for r in rows if r["status"] in ("pending_review", "published", "rejected")]
+
+    # KPI 1 — run success rate
+    finished = [r for r in rows if r["status"] != "running"]
+    run_success_rate = (len(successful) / len(finished) * 100) if finished else 0.0
+
+    # KPI 2 — citation rate (avg % of claims with citations across briefings)
+    citation_rates: list[float] = []
+    for row in successful:
+        try:
+            data = json.loads(row["briefing_json"])
+            sections = data.get("sections", [])
+            total_claims = sum(len(s.get("claims", [])) for s in sections)
+            cited_claims = sum(
+                1
+                for s in sections
+                for c in s.get("claims", [])
+                if c.get("citations")
+            )
+            if total_claims > 0:
+                citation_rates.append(cited_claims / total_claims * 100)
+        except Exception:
+            pass
+    citation_rate = sum(citation_rates) / len(citation_rates) if citation_rates else 0.0
+
+    # KPI 3 — avg sources used per successful run
+    sources = [r["sources_used"] for r in successful if r["sources_used"] is not None]
+    source_coverage = sum(sources) / len(sources) if sources else 0.0
+
+    # KPI 4 — avg duration
+    durations = [
+        r["duration_seconds"]
+        for r in successful
+        if r["duration_seconds"] is not None
+    ]
+    avg_duration = sum(durations) / len(durations) if durations else 0.0
+
+    # KPI 5 — publish rate (of runs that went through review)
+    publish_rate = (len(published) / len(reviewable) * 100) if reviewable else 0.0
+
+    return {
+        "run_success_rate": round(run_success_rate, 1),
+        "citation_rate": round(citation_rate, 1),
+        "source_coverage": round(source_coverage, 1),
+        "avg_duration_seconds": round(avg_duration, 1),
+        "publish_rate": round(publish_rate, 1),
+        "total_runs": total,
+        "successful_runs": len(successful),
+        "failed_runs": len(failed),
+        "published_runs": len(published),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FilePlus, History, Settings, Zap } from "lucide-react";
+import { FilePlus, LayoutDashboard, Settings, Zap } from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/",         icon: FilePlus,  label: "New Briefing" },
-  { href: "/history",  icon: History,   label: "Run History"  },
-  { href: "/settings", icon: Settings,  label: "Settings"     },
+  { href: "/",          icon: FilePlus,       label: "New Briefing" },
+  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard"    },
+  { href: "/settings",  icon: Settings,       label: "Settings"     },
 ];
 
 export function Sidebar() {
@@ -37,7 +37,7 @@ export function Sidebar() {
               title={label}
               aria-label={label}
               className={[
-                "flex items-center justify-center w-11 h-11 transition-all duration-200",
+                "relative flex items-center justify-center w-11 h-11 transition-all duration-200",
                 active ? "clay-knob" : "clay-knob--upcoming hover:clay-knob",
               ].join(" ")}
             >

@@ -60,7 +60,7 @@ class RunMetadata(BaseModel):
     total_steps: int = 0
     token_estimate: Optional[int] = None
     status: Literal[
-        "running", "completed", "failed", "published", "pending_review"
+        "running", "completed", "failed", "published", "pending_review", "rejected"
     ] = "running"
     # Who (or what) initiated this run.  "manual" = user-submitted via the
     # API; "scheduled" = fired by the weekly APScheduler job.  Stored in the

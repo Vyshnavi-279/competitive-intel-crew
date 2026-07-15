@@ -12,11 +12,13 @@ const POLL_INTERVAL_MS = 3000;
 
 interface RunMonitorProps {
   runId: string;
+  /** Optional initial briefing data from server-side fetch to avoid double-fetching */
+  initialBriefing?: Briefing | null;
 }
 
-export function RunMonitor({ runId }: RunMonitorProps) {
+export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
   const router = useRouter();
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
+  const [briefing, setBriefing] = useState<Briefing | null>(initialBriefing ?? null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
 
@@ -45,22 +47,31 @@ export function RunMonitor({ runId }: RunMonitorProps) {
   }, [runId]);
 
   useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
+    // Use a ref-like variable to prevent multiple redirects
+    let redirectScheduled = false;
+    const interval = { id: undefined as ReturnType<typeof setInterval> | undefined };
 
     const poll = async () => {
       const status = await fetchRun();
       if (status !== "running") {
-        clearInterval(interval);
-        // Redirect to detail page after a short delay
-        if (status !== "failed") {
+        // Stop polling
+        if (interval.id !== undefined) {
+          clearInterval(interval.id);
+          interval.id = undefined;
+        }
+        // Redirect to detail page after a short delay (only once, only if not failed)
+        if (status !== "failed" && !redirectScheduled) {
+          redirectScheduled = true;
           setTimeout(() => router.push(`/runs/${runId}`), 1200);
         }
       }
     };
 
     poll(); // immediate first fetch
-    interval = setInterval(poll, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    interval.id = setInterval(poll, POLL_INTERVAL_MS);
+    return () => {
+      if (interval.id !== undefined) clearInterval(interval.id);
+    };
   }, [fetchRun, runId, router]);
 
   if (error) {

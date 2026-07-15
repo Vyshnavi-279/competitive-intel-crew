@@ -3,22 +3,21 @@ CrewAI crew for the Competitive Intelligence Briefing.
 
 WHY THIS ARCHITECTURE EXISTS:
 A single monolithic agent tends to produce shallow, poorly‑structured output.
-By splitting the work across four specialised agents (coordinator → researcher
-→ analyst → writer) we get:
+By splitting the work across five specialised agents (coordinator → researcher
+→ analyst → fact-checker → writer) we get:
   - **Coordinator** — plans the sections and hands off to each downstream agent.
   - **Researcher** — gathers raw web data (capped by SafeSearchTool's runaway guard).
   - **Analyst** — reasons over the research to extract signal from noise.
+  - **Fact-Checker** — cross-checks the Analyst's claims against raw research
+    before the briefing reaches the governance layer (FR-10).
   - **Writer** — produces the final structured briefing with citation markers.
 
 After the crew runs, two governance layers (*enforce_citations* and
 *flag_unverified_assertions*) programmatically enforce citation quality —
 prompts alone are not enough.
 
-
 The entire run is wrapped in try/except so that *any* failure (API outage,
 bad LLM response, etc.) returns a partial Briefing with status="failed"
-
-
 instead of crashing the API layer.
 """
 
@@ -29,6 +28,8 @@ import re
 from datetime import datetime
 from typing import List
 from uuid import uuid4
+
+import litellm  # FIX 1: import for retry / timeout configuration
 
 from crewai import Agent, Crew, LLM, Process, Task
 from dotenv import load_dotenv
@@ -43,6 +44,13 @@ from backend.tools.citation_tool import extract_citations, strip_citation_marker
 from backend.tools.safe_search_tool import SafeSearchTool
 
 from backend.config import settings
+
+# FIX 1: Configure litellm for resilience on Groq free-tier rate limits.
+# num_retries=3 — litellm will automatically retry on 429/5xx up to 3 times.
+# request_timeout=30 — individual LLM calls time out after 30 s, preventing
+# a hung request from blocking the whole crew indefinitely.
+litellm.num_retries = 3
+litellm.request_timeout = 30
 
 # load_dotenv is called by config.py at import time; calling it again here is
 # harmless (override=True ensures the .env file wins over any stale env vars).
@@ -86,10 +94,11 @@ if "anthropic" not in settings.model_name.lower():
         pass
 
 llm = LLM(
-    model=settings.model_name,
+    model=settings.model_name,          # read from .env — e.g. groq/llama-3.1-8b-instant
     api_key=settings.groq_api_key,
     max_tokens=settings.max_tokens,
 )
+
 # ---------------------------------------------------------------------------
 # Shared tool instances (stateful — counts are read after the run)
 # ---------------------------------------------------------------------------
@@ -100,10 +109,14 @@ _search_tool = SafeSearchTool()
 # Per-agent iteration budgets
 # ---------------------------------------------------------------------------
 # Researcher needs the most steps (it uses a tool in a ReAct loop).
-# Coordinator, Analyst and Writer are pure text — they just need 1-3 calls.
+# Coordinator, Analyst, Fact-Checker and Writer are pure text — 1-3 calls each.
 _RESEARCHER_MAX_ITER = max(5, MAX_STEPS)
 _WRITER_MAX_ITER = 3   # no tools; should produce output in a single LLM call
-_DEFAULT_MAX_ITER = 5  # coordinator + analyst
+_DEFAULT_MAX_ITER = 5  # coordinator, analyst, fact-checker
+
+# FIX 1: Agent-level max_rpm=20 — keeps each agent well under the 30 RPM
+# free-tier cap even if multiple agents are active in the sequential run.
+_AGENT_MAX_RPM = 20
 
 # ---------------------------------------------------------------------------
 # Agents
@@ -118,19 +131,21 @@ coordinator = Agent(
     backstory=(
         "You are a senior project manager who coordinates research and "
         "writing.  You never write content yourself, but you produce a "
-        "clear plan that the Researcher, Analyst, and Writer agents follow."
+        "clear plan that the Researcher, Analyst, Fact-Checker, and Writer "
+        "agents follow."
     ),
     allow_delegation=False,
     verbose=True,
     llm=llm,
     max_iter=_DEFAULT_MAX_ITER,
+    max_rpm=_AGENT_MAX_RPM,  # FIX 1
 )
 
 researcher = Agent(
     role="Researcher",
     goal=(
-        "Gather up to 8 reachable sources on the given market topic, "
-        "covering pricing moves, product launches, and market signals."
+        f"Gather up to {settings.max_sources} reachable sources on the given "
+        "market topic, covering pricing moves, product launches, and market signals."
     ),
     backstory=(
         "You are a tireless web researcher who uses search tools to find "
@@ -142,6 +157,7 @@ researcher = Agent(
     verbose=True,
     llm=llm,
     max_iter=_RESEARCHER_MAX_ITER,
+    max_rpm=_AGENT_MAX_RPM,  # FIX 1
 )
 
 analyst = Agent(
@@ -160,6 +176,27 @@ analyst = Agent(
     verbose=True,
     llm=llm,
     max_iter=_DEFAULT_MAX_ITER,
+    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+)
+
+# FIX 2: Add Fact-Checker agent (FR-10 in spec.md; required by eval scenario 1)
+fact_checker = Agent(
+    role="Fact-Checker",
+    goal=(
+        "Cross-check every claim in the Analyst's output against the raw "
+        "research provided by the Researcher.  Flag or remove any claim "
+        "that cannot be traced back to at least one cited source."
+    ),
+    backstory=(
+        "You are a meticulous fact-checker who validates that every "
+        "assertion is supported by evidence in the research corpus.  "
+        "You do not add new information — you only verify and flag."
+    ),
+    allow_delegation=False,
+    verbose=True,
+    llm=llm,
+    max_iter=_DEFAULT_MAX_ITER,
+    max_rpm=_AGENT_MAX_RPM,  # FIX 1
 )
 
 writer = Agent(
@@ -179,6 +216,7 @@ writer = Agent(
     verbose=True,
     llm=llm,
     max_iter=_WRITER_MAX_ITER,
+    max_rpm=_AGENT_MAX_RPM,  # FIX 1
 )
 
 # ---------------------------------------------------------------------------
@@ -204,8 +242,8 @@ planning_task = Task(
 
 research_task = Task(
     description=(
-        "Using the SafeSearch tool, gather up to 8 reachable sources "
-        "on {topic}.  Focus on:\n"
+        f"Using the SafeSearch tool, gather up to {settings.max_sources} reachable sources "
+        "on {{topic}}.  Focus on:\n"
         "  - Recent competitor pricing changes and product launches\n"
         "  - Market signals (regulatory news, partnerships, funding rounds)\n\n"
         "Run 4-6 searches, then STOP and report your findings.\n"
@@ -237,9 +275,30 @@ analyze_task = Task(
     context=[planning_task, research_task],
 )
 
+# FIX 2: Fact-checker task — cross-checks Analyst output against raw research
+fact_check_task = Task(
+    description=(
+        "Review the Analyst's organised claims and verify each one against "
+        "the Researcher's raw findings.\n\n"
+        "For each claim:\n"
+        "  - Confirm the cited source actually appears in the research.\n"
+        "  - If a claim has no supporting source in the research, "
+        "mark it as '[UNVERIFIED]' at the start.\n"
+        "  - If a claim is directly supported by research, keep it as-is.\n\n"
+        "Output the same three-section structure as the Analyst, "
+        "but with '[UNVERIFIED]' prefixes where needed."
+    ),
+    expected_output=(
+        "The Analyst's three-section claim list, with '[UNVERIFIED]' prefixed "
+        "on any claim that could not be traced back to the research corpus."
+    ),
+    agent=fact_checker,
+    context=[research_task, analyze_task],
+)
+
 write_task = Task(
     description=(
-        "Using the Analyst's structured findings, write the final briefing NOW.\n"
+        "Using the Fact-Checker's verified findings, write the final briefing NOW.\n"
         "Do not search for more information. Do not ask questions. Just write.\n\n"
         "Output ONLY the briefing markdown using these EXACT headings:\n\n"
         "## Executive Summary\n"
@@ -251,7 +310,8 @@ write_task = Task(
         "3. Every bullet point MUST end with at least one citation: "
         "[Source Name](https://url)\n"
         "4. The Executive Summary must end with a '- **Recommendation:**' bullet.\n"
-        "5. Keep each bullet to 1-2 sentences. Do not add preamble or closing remarks.\n\n"
+        "5. Keep each bullet to 1-2 sentences. Do not add preamble or closing remarks.\n"
+        "6. Do NOT include claims marked '[UNVERIFIED]' — skip them entirely.\n\n"
         "Topic: {topic}"
     ),
     expected_output=(
@@ -260,19 +320,22 @@ write_task = Task(
         "Nothing else — no intro text, no closing remarks."
     ),
     agent=writer,
-    context=[analyze_task],
+    context=[fact_check_task],
 )
 
 # ---------------------------------------------------------------------------
 # Crew
 # ---------------------------------------------------------------------------
+# FIX 1: max_rpm=20 at crew level enforces a global call rate ceiling.
+# FIX 2: All 5 agents/tasks included in the correct sequential order.
 
 crew = Crew(
-    agents=[coordinator, researcher, analyst, writer],
-    tasks=[planning_task, research_task, analyze_task, write_task],
+    agents=[coordinator, researcher, analyst, fact_checker, writer],
+    tasks=[planning_task, research_task, analyze_task, fact_check_task, write_task],
     process=Process.sequential,
     verbose=True,
-    max_rpm=10,  # cap LLM calls/minute to avoid Groq rate limits
+    max_rpm=20,  # FIX 1: crew-level rate limit (Groq free tier: 30 RPM)
+    max_execution_time=MAX_EXECUTION_SECONDS,
 )
 
 # ---------------------------------------------------------------------------
@@ -405,8 +468,10 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
 
     try:
         # ---- Kick off the crew (with 429 retry logic) ---------------------
-        # Retry up to 2 times on rate-limit errors with exponential backoff.
-        _MAX_RETRIES = 2
+        # Retry up to 4 times on rate-limit errors with exponential backoff.
+        # litellm.num_retries=3 handles lower-level retries; this outer loop
+        # handles full crew-kickoff level 429s that slip through.
+        _MAX_RETRIES = 4
         _attempt = 0
         result = None
         while True:
@@ -415,10 +480,18 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                 break  # success — exit retry loop
             except Exception as _kick_exc:
                 exc_str = str(_kick_exc)
-                if "429" in exc_str and _attempt < _MAX_RETRIES:
-                    # Parse retry_after from the exception message if present.
-                    _retry_match = re.search(r"retry[_\-]after[\":\s]+(\d+)", exc_str, re.IGNORECASE)
-                    _retry_after = int(_retry_match.group(1)) if _retry_match else 30
+                is_rate_limit = (
+                    "429" in exc_str
+                    or "rate_limit" in exc_str.lower()
+                    or "RateLimitError" in exc_str
+                )
+                if is_rate_limit and _attempt < _MAX_RETRIES:
+                    # Parse retry_after from the error body if present.
+                    _retry_match = re.search(
+                        r"(?:retry[_\-]after|please try again in)[\":\s]+(\d+(?:\.\d+)?)",
+                        exc_str, re.IGNORECASE
+                    )
+                    _retry_after = max(60, int(float(_retry_match.group(1)))) if _retry_match else 60
                     _attempt += 1
                     logger.warning(
                         "Rate-limited (429) on attempt %d/%d — waiting %ds before retry.",
@@ -426,12 +499,19 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     )
                     await asyncio.sleep(_retry_after)
                 else:
-                    # Not a 429, or out of retries — re-raise to the outer handler.
+                    # Not a rate-limit error, or out of retries — re-raise.
                     raise
 
         # crew.kickoff returns a CrewOutput; the final task's output is in
         # result.raw or can be accessed as a string.
         raw_output = str(result) if result else ""
+
+        # Guard: if the raw output looks like an exception traceback or rate-limit
+        # error message, do not attempt to parse it as briefing content.
+        # This prevents stack traces from becoming "claims" in the UI.
+        _ERROR_SIGNALS = ("RateLimitError", "RateLimit", "GroqException", "Traceback", "litellm.")
+        if any(sig in raw_output for sig in _ERROR_SIGNALS):
+            raise RuntimeError(f"Crew output contains an error message: {raw_output[:300]}")
 
         # ---- Parse the writer's output into sections ----------------------
         sections = _parse_sections(raw_output)
@@ -439,26 +519,31 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # Fallback: if parsing produced no sections or all sections are empty,
         # try to recover by treating the entire raw output as uncited claims
         # in a single "Executive Summary" section so the user sees *something*.
+        # Only attempt this if the text looks like real content (has letters).
         total_claims = sum(len(s.claims) for s in sections)
-        if not sections or total_claims == 0:
+        if (not sections or total_claims == 0) and raw_output.strip():
             fallback_claims = []
             for block in re.split(r"\n\s*\n", raw_output.strip()):
                 block = block.strip()
-                if block:
-                    citations = extract_citations(block)
-                    clean = strip_citation_markers(block)
-                    if clean:
-                        fallback_claims.append(
-                            Claim(text=clean, citations=citations, verified=bool(citations))
-                        )
+                if not block:
+                    continue
+                # Skip blocks that are error messages or single-line noise
+                if any(sig in block for sig in _ERROR_SIGNALS):
+                    continue
+                citations = extract_citations(block)
+                clean = strip_citation_markers(block)
+                if clean:
+                    fallback_claims.append(
+                        Claim(text=clean, citations=citations, verified=bool(citations))
+                    )
             if fallback_claims:
                 sections = [Section(title="Executive Summary", claims=fallback_claims)]
 
         # ---- Governance layer 1: drop uncited claims ----------------------
-        sections, citation_flags = enforce_citations(sections)
+        sections, citation_flags = enforce_citations(sections, run_id=run_id)
 
         # ---- Governance layer 2: flag weakly‑sourced high‑risk claims -----
-        sections, unverified_flags = flag_unverified_assertions(sections)
+        sections, unverified_flags = flag_unverified_assertions(sections, run_id=run_id)
 
         # ---- Build metadata -----------------------------------------------
         ended_at = datetime.utcnow()
@@ -497,21 +582,48 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
 
         # ---- Map exception to a human-readable message -------------------
         exc_str = str(exc)
-        if "429" in exc_str and "rate_limit" in exc_str.lower():
-            human_error = (
-                "Groq rate limit reached. Free tier allows limited requests/minute. "
-                "Wait a moment and try again, or check https://console.groq.com for limits."
+        is_rate_limit = (
+            "429" in exc_str
+            or "rate_limit" in exc_str.lower()
+            or "RateLimitError" in exc_str
+        )
+        if is_rate_limit:
+            # Try to extract the retry-after seconds from the error body
+            _ra_match = re.search(
+                r"(?:retry[_\-]after|please try again in)[\":\s]+(\d+(?:\.\d+)?)",
+                exc_str, re.IGNORECASE
             )
-        elif "429" in exc_str:
-            human_error = "Model is temporarily rate-limited. Please try again in 30 seconds."
+            _wait = f"~{int(float(_ra_match.group(1)))}s" if _ra_match else "~60s"
+            human_error = (
+                f"Groq rate limit reached (retry after {_wait}). "
+                "The free tier allows limited tokens per minute. "
+                "Wait a minute and try again, or upgrade at https://console.groq.com."
+            )
         elif "402" in exc_str:
-            human_error = "Groq billing issue. Check your account at https://console.groq.com"
+            human_error = "Groq billing issue. Check your account at https://console.groq.com."
         elif "404" in exc_str and ("model" in exc_str.lower() or "endpoints" in exc_str.lower()):
-            human_error = "Model not found on Groq. Check MODEL_NAME in .env (e.g. groq/llama-3.3-70b-versatile)"
+            human_error = (
+                "Model not found on Groq. "
+                "Check MODEL_NAME in .env — use groq/llama-3.1-8b-instant."
+            )
         elif "401" in exc_str:
-            human_error = "Invalid Groq API key. Check GROQ_API_KEY in .env"
+            human_error = "Invalid Groq API key. Check GROQ_API_KEY in your .env file."
+        elif "failed to call a function" in exc_str.lower() or "failed_generation" in exc_str.lower():
+            human_error = (
+                "Model failed to generate a valid tool call. "
+                "Restart the backend and try again."
+            )
+        elif "Crew output contains an error message" in exc_str:
+            # Our own guard raised — the inner message is already clean-ish
+            human_error = exc_str.replace("Crew output contains an error message: ", "")[:200]
+            # Re-map if it's still a rate-limit string
+            if "RateLimitError" in human_error or "rate_limit" in human_error.lower():
+                human_error = (
+                    "Groq rate limit reached. "
+                    "Wait a minute and try again, or upgrade at https://console.groq.com."
+                )
         else:
-            human_error = exc_str[:200]
+            human_error = "Run failed due to an unexpected error. Please try again."
 
         return Briefing(
             metadata=metadata,

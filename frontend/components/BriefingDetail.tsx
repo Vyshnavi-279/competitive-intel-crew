@@ -76,10 +76,46 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
 
   const m = briefing.metadata;
   const isPendingReview = m.status === "pending_review";
+  const isFailed = m.status === "failed";
 
-  // Reliability stats
-  const unverifiedCount = briefing.unverified_flags.filter(f => f.toLowerCase().includes("unverified") || f.toLowerCase().includes("hedged")).length;
+  // A flag is a "raw error" if it looks like an exception traceback rather
+  // than a legitimate governance note (dropped/hedged claim).
+  const isRawError = (f: string) =>
+    f.includes("RateLimitError") ||
+    f.includes("GroqException") ||
+    f.includes("litellm.") ||
+    f.includes("Traceback") ||
+    f.includes("Exception") ||
+    f.includes("Error:");
+
+  // Map a raw error flag to a friendly human-readable message.
+  function humanizeError(flags: string[]): string {
+    const raw = flags[0] ?? "";
+    if (raw.includes("Rate limit") || raw.includes("RateLimitError") || raw.includes("429"))
+      return "Groq rate limit reached. The free tier has limited requests per minute. Wait 60 seconds and try again, or check console.groq.com for your quota.";
+    if (raw.includes("401") || raw.includes("Invalid API key"))
+      return "Invalid Groq API key. Check GROQ_API_KEY in your .env file.";
+    if (raw.includes("404") || raw.includes("model") && raw.includes("not found"))
+      return "Model not found on Groq. Check MODEL_NAME in your .env file — use groq/llama-3.3-70b-versatile.";
+    if (raw.includes("Failed to call a function") || raw.includes("failed_generation"))
+      return "The model failed to generate a valid tool call. Restart the backend and try again.";
+    if (raw.includes("402"))
+      return "Groq billing issue. Check your account at console.groq.com.";
+    // If there's a clean (non-raw) human error stored, use it
+    const clean = flags.find(f => !isRawError(f));
+    if (clean) return clean;
+    return "The run encountered an unexpected error. Please try again.";
+  }
+
+  // For failed runs, show a friendly message — never the raw exception string.
+  const failureMessage = isFailed ? humanizeError(briefing.unverified_flags) : null;
+
+  // Reliability stats — count from unverified_flags without double-counting
   const droppedCount = briefing.unverified_flags.filter(f => f.toLowerCase().includes("dropped")).length;
+  const unverifiedCount = briefing.unverified_flags.filter(
+    f => !f.toLowerCase().includes("dropped") &&
+         (f.toLowerCase().includes("unverified") || f.toLowerCase().includes("hedged"))
+  ).length;
 
   async function handlePublish() {
     setActionLoading("publish");
@@ -155,23 +191,44 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
         <AgentChain agents={buildAgentNodes(m.status, m.sources_used)} />
       </div>
 
-      {/* Sections */}
-      {briefing.sections.length === 0 ? (
+      {/* Failed run — friendly error card */}
+      {isFailed && (
+        <div className="clay-raised--rejected p-6 rounded-[28px]">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} strokeWidth={2} style={{ color: "#C98B7A", flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <p className="eyebrow mb-1" style={{ color: "#7a3b2e" }}>Run Failed</p>
+              <p className="text-sm leading-relaxed" style={{ color: "#4A4438" }}>
+                {failureMessage}
+              </p>
+              <p className="text-xs mt-3" style={{ color: "#8C8474" }}>
+                Try starting a new briefing. If the problem persists, check your
+                Groq API key and rate-limit quota at{" "}
+                <a
+                  href="https://console.groq.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                  style={{ color: "#93B6C4" }}
+                >
+                  console.groq.com
+                </a>.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sections — only shown for non-failed runs */}
+      {!isFailed && (briefing.sections.length === 0 ? (
         <div className="clay-raised p-8 text-center">
           <p className="text-sm" style={{ color: "#8C8474" }}>
-            No sections were parsed from this run's output.
+            No sections were parsed from this run&apos;s output.
           </p>
-          {briefing.unverified_flags.length > 0 && (
-            <div className="mt-4 text-left">
-              {briefing.unverified_flags.map((f, i) => (
-                <p key={i} className="text-xs mt-1" style={{ color: "#C98B7A" }}>{f}</p>
-              ))}
-            </div>
-          )}
         </div>
       ) : (
         briefing.sections.map((s, i) => <SectionCard key={i} section={s} />)
-      )}
+      ))}
 
       {/* Reliability panel */}
       <ReliabilityPanel
@@ -263,17 +320,19 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
         </div>
       )}
 
-      {/* Governance flags */}
-      {briefing.unverified_flags.length > 0 && !isPendingReview && (
+      {/* Governance flags — only show legitimate governance notes, not raw error strings */}
+      {briefing.unverified_flags.length > 0 && !isPendingReview && !isFailed && (
         <div className="clay-inset rounded-[20px] p-4">
           <p className="eyebrow mb-2">Governance Log</p>
           <ul className="flex flex-col gap-1">
-            {briefing.unverified_flags.map((f, i) => (
-              <li key={i} className="flex items-start gap-1.5 text-xs" style={{ color: "#8C8474" }}>
-                <AlertTriangle size={11} className="shrink-0 mt-0.5" style={{ color: "#E8C4A2" }} />
-                {f}
-              </li>
-            ))}
+            {briefing.unverified_flags
+              .filter(f => !isRawError(f))
+              .map((f, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-xs" style={{ color: "#8C8474" }}>
+                  <AlertTriangle size={11} className="shrink-0 mt-0.5" style={{ color: "#E8C4A2" }} />
+                  {f}
+                </li>
+              ))}
           </ul>
         </div>
       )}

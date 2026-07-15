@@ -56,3 +56,16 @@ export interface RunSummary {
   sources_skipped_count: number;
   triggered_by: TriggeredBy;
 }
+
+// KPI data from GET /api/kpis
+export interface KpiData {
+  run_success_rate: number;    // 0-100 %
+  citation_rate: number;       // 0-100 % of claims with citations
+  source_coverage: number;     // avg sources used per run
+  avg_duration_seconds: number;
+  publish_rate: number;        // 0-100 % of reviewed runs published
+  total_runs: number;
+  successful_runs: number;
+  failed_runs: number;
+  published_runs: number;
+}

@@ -1,4 +1,4 @@
-import type { Briefing, RunSummary } from "./types";
+import type { Briefing, KpiData, RunSummary } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -53,4 +53,9 @@ export async function rejectRun(
 /** GET /api/health */
 export async function getHealth(): Promise<{ status: string }> {
   return apiFetch("/api/health");
+}
+
+/** GET /api/kpis — five business KPIs computed from all stored runs */
+export async function fetchKpis(): Promise<KpiData> {
+  return apiFetch<KpiData>("/api/kpis");
 }

@@ -13,10 +13,12 @@ export default async function RunPage({ params }: PageProps) {
   try {
     briefing = await getRun(id);
   } catch {
-    // briefing stays null — RunMonitor handles this gracefully
+    // briefing stays null — RunMonitor handles graceful loading
   }
 
-  // If running or not yet loaded, show the live monitor
+  // If running or not yet loaded, show the live monitor.
+  // Pass the initial briefing data down to avoid RunMonitor doing a redundant
+  // fetch on mount (which would also cause a brief flash and a race condition).
   if (!briefing || briefing.metadata.status === "running") {
     return (
       <div className="max-w-2xl mx-auto">
@@ -29,7 +31,7 @@ export default async function RunPage({ params }: PageProps) {
             {briefing?.metadata.topic ?? "Loading…"}
           </h1>
         </div>
-        <RunMonitor runId={id} />
+        <RunMonitor runId={id} initialBriefing={briefing} />
       </div>
     );
   }

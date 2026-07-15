@@ -287,37 +287,45 @@ class TestUncitedClaimIsDropped:
         ]
 
     def test_uncited_claim_is_dropped(self, mixed_sections):
-        """enforce_citations downgrades uncited claims to verified=False and flags them."""
+        """enforce_citations drops uncited claims entirely (FR-4) and records a flag.
+
+        Per FR-4: "Claims without a citation must never reach the final output."
+        The governance layer removes uncited claims from the briefing rather than
+        merely downgrading them.
+        """
         from backend.governance.citation_guard import enforce_citations
 
         cleaned_sections, flags = enforce_citations(mixed_sections)
 
-        # ── All uncited claims are marked verified=False ─────────────────────
+        # ── No uncited claims survive in the output ───────────────────────────
+        # FR-4: uncited claims must be dropped, not just flagged.
         for section in cleaned_sections:
             for claim in section.claims:
-                if len(claim.citations) == 0:
-                    assert claim.verified is False, (
-                        f"Uncited claim should be marked verified=False, "
-                        f"got verified={claim.verified} for: {claim.text!r}"
-                    )
+                assert len(claim.citations) >= 1, (
+                    f"Uncited claim should have been dropped but survived in "
+                    f"section '{section.title}': {claim.text!r}"
+                )
 
-        # ── The specific uncited claim is present but downgraded (not lost) ──
+        # ── The specific uncited IPO claim was dropped (not present) ─────────
         all_claims = [
             claim
             for section in cleaned_sections
             for claim in section.claims
         ]
         ipo_claims = [c for c in all_claims if "secretly planning an IPO" in c.text]
-        assert len(ipo_claims) == 1, (
-            "The uncited IPO claim should still be present (downgraded), "
-            f"but found {len(ipo_claims)} instances."
-        )
-        assert ipo_claims[0].verified is False, (
-            "The uncited IPO claim must be marked verified=False."
+        assert len(ipo_claims) == 0, (
+            "The uncited IPO claim should have been dropped by enforce_citations "
+            f"(FR-4), but found {len(ipo_claims)} instance(s)."
         )
 
-        # ── The flags list mentions the downgraded claim ─────────────────────
-        assert len(flags) >= 1, "Expected at least one flag, got none."
+        # ── The cited claim was NOT dropped ───────────────────────────────────
+        cited_claims = [c for c in all_claims if "cut prices by 15%" in c.text]
+        assert len(cited_claims) >= 1, (
+            "The properly-cited claim should survive enforce_citations, but was missing."
+        )
+
+        # ── The flags list records the dropped claim ──────────────────────────
+        assert len(flags) >= 1, "Expected at least one flag for the dropped claim, got none."
         combined_flags = " ".join(flags).lower()
         assert "dropped" in combined_flags or "uncited" in combined_flags, (
             f"Flag text should mention 'dropped' or 'uncited', got: {flags}"

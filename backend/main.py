@@ -42,6 +42,7 @@ from backend.crew import run_briefing
 from backend.scheduler import create_scheduler
 from backend.storage.db import (
     get_run,
+    get_kpis,
     init_db,
     list_runs,
     log_event,
@@ -153,6 +154,16 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/kpis", tags=["meta"])
+async def kpis() -> Dict[str, Any]:
+    """Return the 5 business KPIs computed from all stored runs."""
+    try:
+        return get_kpis()
+    except Exception as exc:
+        logger.exception("Failed to compute KPIs")
+        raise HTTPException(status_code=500, detail=f"KPI computation failed: {exc}") from exc
+
+
 @app.get("/api/status", tags=["meta"])
 async def api_status() -> Dict[str, Any]:
     """Return Groq account/model status.
@@ -183,7 +194,7 @@ async def api_status() -> Dict[str, Any]:
 
         # Confirm the configured model exists in the returned list
         available_ids = {m.get("id", "") for m in data.get("data", [])}
-        # Model name in .env is "groq/llama-3.3-70b-versatile"; strip provider prefix
+        # Model name in .env is "groq/llama-3.1-8b-instant"; strip provider prefix
         bare_model = model_name.replace("groq/", "")
         model_available = bare_model in available_ids
 
@@ -231,32 +242,39 @@ async def create_run(body: RunRequest) -> Dict[str, Any]:
     After governance checks the status will be ``"pending_review"`` (not
     ``"completed"``) so a human must approve before ``"published"``.
     """
-    topic = body.topic.strip()
-    if not topic:
-        raise HTTPException(status_code=422, detail="topic must not be empty")
+    try:
+        topic = body.topic.strip()
+        if not topic:
+            raise HTTPException(status_code=422, detail="topic must not be empty")
 
-    logger.info("Manual run requested for topic: %s", topic)
+        logger.info("Manual run requested for topic: %s", topic)
 
-    briefing = await run_briefing(topic, triggered_by="manual")
-    run_id = briefing.metadata.run_id
+        briefing = await run_briefing(topic, triggered_by="manual")
+        run_id = briefing.metadata.run_id
 
-    # Persist before logging (FK constraint in audit_log).
-    save_run(briefing)
+        # Persist before logging (FK constraint in audit_log).
+        save_run(briefing)
 
-    log_event(run_id, "run started")
-    if briefing.metadata.status == "failed":
-        log_event(run_id, "run failed")
-    else:
-        log_event(run_id, "awaiting review")
+        log_event(run_id, "run started")
+        if briefing.metadata.status == "failed":
+            log_event(run_id, "run failed")
+        else:
+            log_event(run_id, "awaiting review")
 
-    logger.info(
-        "Run %s finished: status=%s, duration=%.1fs",
-        run_id,
-        briefing.metadata.status,
-        briefing.metadata.duration_seconds or 0,
-    )
+        logger.info(
+            "Run %s finished: status=%s, duration=%.1fs",
+            run_id,
+            briefing.metadata.status,
+            briefing.metadata.duration_seconds or 0,
+        )
 
-    return briefing.to_dict()
+        return briefing.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error in create_run")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {exc}") from exc
 
 
 @app.get("/api/runs", tags=["runs"])
@@ -271,11 +289,17 @@ async def get_runs(limit: int = 20) -> List[Dict[str, Any]]:
     limit : int, default 20
         Maximum number of rows to return (newest first, max 200).
     """
-    if limit < 1 or limit > 200:
-        raise HTTPException(
-            status_code=422, detail="limit must be between 1 and 200"
-        )
-    return list_runs(limit=limit)
+    try:
+        if limit < 1 or limit > 200:
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 200"
+            )
+        return list_runs(limit=limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list runs")
+        raise HTTPException(status_code=500, detail=f"Failed to list runs: {exc}") from exc
 
 
 @app.get("/api/runs/{run_id}", tags=["runs"])
@@ -284,12 +308,18 @@ async def get_run_detail(run_id: str) -> Dict[str, Any]:
 
     Raises 404 if *run_id* is not found.
     """
-    data = get_run(run_id)
-    if data is None:
-        raise HTTPException(
-            status_code=404, detail=f"Run '{run_id}' not found."
-        )
-    return data
+    try:
+        data = get_run(run_id)
+        if data is None:
+            raise HTTPException(
+                status_code=404, detail=f"Run '{run_id}' not found."
+            )
+        return data
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to retrieve run %s", run_id)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve run: {exc}") from exc
 
 
 @app.post("/api/runs/{run_id}/publish", tags=["runs"])
@@ -309,36 +339,44 @@ async def publish_run(run_id: str) -> PublishResponse:
     ------
     404 : run_id not found
     409 : current status is not ``"pending_review"``
+    500 : DB update failed
     """
-    data = get_run(run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+    try:
+        data = get_run(run_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
 
-    current_status = data.get("metadata", {}).get("status")
-    if current_status != "pending_review":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Run '{run_id}' cannot be published: "
-                f"status is '{current_status}', expected 'pending_review'."
-            ),
+        current_status = data.get("metadata", {}).get("status")
+        if current_status != "pending_review":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' cannot be published: "
+                    f"status is '{current_status}', expected 'pending_review'."
+                ),
+            )
+
+        if not update_run_status(run_id, "published"):
+            raise HTTPException(status_code=500, detail="Status update failed.")
+
+        log_event(run_id, "published by reviewer")
+        logger.info("Run %s published.", run_id)
+
+        return PublishResponse(
+            run_id=run_id,
+            status="published",
+            message=f"Run '{run_id}' has been published successfully.",
         )
 
-    if not update_run_status(run_id, "published"):
-        raise HTTPException(status_code=500, detail="Status update failed.")
-
-    log_event(run_id, "published by reviewer")
-    logger.info("Run %s published.", run_id)
-
-    return PublishResponse(
-        run_id=run_id,
-        status="published",
-        message=f"Run '{run_id}' has been published successfully.",
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to publish run %s", run_id)
+        raise HTTPException(status_code=500, detail=f"Failed to publish run: {exc}") from exc
 
 
 @app.post("/api/runs/{run_id}/reject", tags=["runs"])
-async def reject_run(run_id: str, body: RejectRequest = RejectRequest()) -> RejectResponse:
+async def reject_run(run_id: str, body: Optional[RejectRequest] = None) -> RejectResponse:
     """Reject a briefing that is awaiting human review.
 
     Transitions the status from ``"pending_review"`` to ``"rejected"`` and
@@ -353,35 +391,43 @@ async def reject_run(run_id: str, body: RejectRequest = RejectRequest()) -> Reje
     ------
     404 : run_id not found
     409 : current status is not ``"pending_review"``
+    500 : DB update failed
     """
-    data = get_run(run_id)
-    if data is None:
-        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+    try:
+        data = get_run(run_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
 
-    current_status = data.get("metadata", {}).get("status")
-    if current_status != "pending_review":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Run '{run_id}' cannot be rejected: "
-                f"status is '{current_status}', expected 'pending_review'."
-            ),
+        current_status = data.get("metadata", {}).get("status")
+        if current_status != "pending_review":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' cannot be rejected: "
+                    f"status is '{current_status}', expected 'pending_review'."
+                ),
+            )
+
+        if not update_run_status(run_id, "rejected"):
+            raise HTTPException(status_code=500, detail="Status update failed.")
+
+        reason = ((body.reason if body else None) or "").strip() or None
+        audit_text = "rejected by reviewer"
+        if reason:
+            audit_text += f": {reason}"
+
+        log_event(run_id, audit_text)
+        logger.info("Run %s rejected. Reason: %s", run_id, reason or "(none)")
+
+        return RejectResponse(
+            run_id=run_id,
+            status="rejected",
+            reason=reason,
+            message=f"Run '{run_id}' has been rejected.",
         )
 
-    if not update_run_status(run_id, "rejected"):
-        raise HTTPException(status_code=500, detail="Status update failed.")
-
-    reason = (body.reason or "").strip() or None
-    audit_text = "rejected by reviewer"
-    if reason:
-        audit_text += f": {reason}"
-
-    log_event(run_id, audit_text)
-    logger.info("Run %s rejected. Reason: %s", run_id, reason or "(none)")
-
-    return RejectResponse(
-        run_id=run_id,
-        status="rejected",
-        reason=reason,
-        message=f"Run '{run_id}' has been rejected.",
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to reject run %s", run_id)
+        raise HTTPException(status_code=500, detail=f"Failed to reject run: {exc}") from exc
