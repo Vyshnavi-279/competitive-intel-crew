@@ -128,56 +128,24 @@ def _make_partial_failure_response() -> dict:
 def client():
     """A TestClient for the FastAPI app with the crew run mocked out.
 
-    The crew's run_briefing coroutine is replaced so no LLM or network calls
-    are made.  The happy-path payload is returned by default; individual tests
-    that need a different payload patch run_briefing themselves.
+    Patches run_briefing inside backend.main (the symbol the route handler
+    actually calls) so no LLM or network calls are made.
     """
-    # Avoid the pkg_resources issue in the venv's crewai install by importing
-    # the app only after crewai modules are safely mocked.
-    import importlib
-    import types
     from unittest.mock import AsyncMock
+    from backend.models.schemas import Briefing
+    from backend.storage.db import init_db
 
-    # Guard: if crewai is already importable use it; otherwise stub it.
-    crewai_stub = MagicMock()
-    crewai_tools_stub = MagicMock()
-    with (
-        patch.dict(
-            "sys.modules",
-            {
-                "crewai": crewai_stub,
-                "crewai_tools": crewai_tools_stub,
-            },
-        )
-    ):
-        # Force re-import so the stubs are picked up.
-        for mod in list(sys.modules.keys()):
-            if mod.startswith("backend.crew") or mod == "backend.main":
-                del sys.modules[mod]
+    init_db()
 
-        from backend.models.schemas import Briefing
-        from backend.models.schemas import RunMetadata
-        from backend.storage.db import init_db
+    mock_briefing = Briefing.model_validate(_make_cited_briefing_response())
+    run_briefing_mock = AsyncMock(return_value=mock_briefing)
 
-        init_db()
-
-        # Patch run_briefing at the module level before importing main.
-        mock_briefing = Briefing.model_validate(_make_cited_briefing_response())
-        run_briefing_mock = AsyncMock(return_value=mock_briefing)
-
-        with patch("backend.crew.run_briefing", run_briefing_mock):
-            # Now import main (it re-imports run_briefing from backend.crew).
-            if "backend.main" in sys.modules:
-                del sys.modules["backend.main"]
-            import backend.main as main_module
-
-            # Swap the reference inside the already-imported main module.
-            main_module.run_briefing = run_briefing_mock
-
-            from fastapi.testclient import TestClient
-
-            with TestClient(main_module.app, raise_server_exceptions=True) as tc:
-                yield tc
+    # Import main fresh, then patch the name it imported run_briefing under.
+    import backend.main as main_module
+    with patch.object(main_module, "run_briefing", run_briefing_mock):
+        from fastapi.testclient import TestClient
+        with TestClient(main_module.app, raise_server_exceptions=True) as tc:
+            yield tc, run_briefing_mock
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +159,8 @@ class TestFullWeeklyBriefingHappyPath:
 
     def test_full_weekly_briefing_happy_path(self, client):
         """Full pipeline: 200 OK, 3 correct sections, every claim is cited."""
-        response = client.post("/api/run", json={"topic": "AI developer tools market 2025"})
+        tc, _mock = client
+        response = tc.post("/api/run", json={"topic": "AI developer tools market 2025"})
 
         # ── HTTP layer ──────────────────────────────────────────────────────
         assert response.status_code == 200, (
@@ -247,12 +216,14 @@ class TestSourceFailureHandling:
 
         from backend.models.schemas import Briefing
 
+        tc, _mock = client
+
         partial_payload = _make_partial_failure_response()
         mock_briefing = Briefing.model_validate(partial_payload)
         partial_mock = AsyncMock(return_value=mock_briefing)
         main_module.run_briefing = partial_mock
 
-        response = client.post("/api/run", json={"topic": "AI tools pricing Q4 2025"})
+        response = tc.post("/api/run", json={"topic": "AI tools pricing Q4 2025"})
 
         # ── Still a 200 — run did not crash ──────────────────────────────────
         assert response.status_code == 200, (
@@ -290,7 +261,7 @@ class TestSourceFailureHandling:
 
 
 class TestUncitedClaimIsDropped:
-    """enforce_citations must silently drop claims that have no citations."""
+    """enforce_citations must flag and downgrade claims that have no citations."""
 
     @pytest.fixture()
     def mixed_sections(self):
@@ -316,31 +287,37 @@ class TestUncitedClaimIsDropped:
         ]
 
     def test_uncited_claim_is_dropped(self, mixed_sections):
-        """enforce_citations removes uncited claims and flags them."""
+        """enforce_citations downgrades uncited claims to verified=False and flags them."""
         from backend.governance.citation_guard import enforce_citations
 
         cleaned_sections, flags = enforce_citations(mixed_sections)
 
-        # ── No uncited claims survive ────────────────────────────────────────
+        # ── All uncited claims are marked verified=False ─────────────────────
         for section in cleaned_sections:
             for claim in section.claims:
-                assert len(claim.citations) >= 1, (
-                    f"Uncited claim leaked through enforce_citations: {claim.text!r}"
-                )
+                if len(claim.citations) == 0:
+                    assert claim.verified is False, (
+                        f"Uncited claim should be marked verified=False, "
+                        f"got verified={claim.verified} for: {claim.text!r}"
+                    )
 
-        # ── The specific uncited claim text is gone ──────────────────────────
-        all_texts = [
-            claim.text
+        # ── The specific uncited claim is present but downgraded (not lost) ──
+        all_claims = [
+            claim
             for section in cleaned_sections
             for claim in section.claims
         ]
-        assert not any("secretly planning an IPO" in t for t in all_texts), (
-            "The uncited claim 'secretly planning an IPO' should have been "
-            "dropped but was found in the cleaned output."
+        ipo_claims = [c for c in all_claims if "secretly planning an IPO" in c.text]
+        assert len(ipo_claims) == 1, (
+            "The uncited IPO claim should still be present (downgraded), "
+            f"but found {len(ipo_claims)} instances."
+        )
+        assert ipo_claims[0].verified is False, (
+            "The uncited IPO claim must be marked verified=False."
         )
 
-        # ── The flags list mentions the dropped claim ────────────────────────
-        assert len(flags) >= 1, "Expected at least one drop flag, got none."
+        # ── The flags list mentions the downgraded claim ─────────────────────
+        assert len(flags) >= 1, "Expected at least one flag, got none."
         combined_flags = " ".join(flags).lower()
         assert "dropped" in combined_flags or "uncited" in combined_flags, (
             f"Flag text should mention 'dropped' or 'uncited', got: {flags}"
