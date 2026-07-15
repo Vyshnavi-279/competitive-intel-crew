@@ -42,8 +42,8 @@ from backend.models.schemas import Briefing
 # Database path
 # ---------------------------------------------------------------------------
 
-_DB_DIR = Path(__file__).parent          # backend/storage/
-_DB_PATH = _DB_DIR / "runs.db"
+_DB_DIR = Path(os.environ.get("DB_DIR", Path(__file__).parent))
+_DB_PATH = Path(_DB_DIR) / "runs.db"
 
 # ---------------------------------------------------------------------------
 # Internal helpers
