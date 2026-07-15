@@ -26,7 +26,7 @@ export default async function RunPage({ params }: PageProps) {
           <p className="eyebrow mb-1">Live Monitor</p>
           <h1
             className="text-2xl font-semibold"
-            style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+            style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
           >
             {briefing?.metadata.topic ?? "Loading…"}
           </h1>

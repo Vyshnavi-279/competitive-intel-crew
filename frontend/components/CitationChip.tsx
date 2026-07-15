@@ -7,14 +7,14 @@ interface CitationChipProps {
 
 export function CitationChip({ citation }: CitationChipProps) {
   const inner = (
-    <span className="inline-flex items-center gap-1 clay-inset-pill px-2.5 py-1 text-[11px] font-medium transition-all duration-150 hover:brightness-95">
-      <span style={{ color: "#8C8474" }}>{citation.source_name}</span>
+    <span className="inline-flex items-center gap-1 clay-inset-pill px-2.5 py-1 text-[13px] font-medium transition-all duration-150 hover:brightness-95">
+      <span style={{ color: "#2E2A22" }}>{citation.source_name}</span>
       {citation.url && (
         <span
           className="clay-knob flex items-center justify-center w-4 h-4 shrink-0"
           aria-hidden="true"
         >
-          <ExternalLink size={9} strokeWidth={2.5} color="#8C8474" />
+          <ExternalLink size={9} strokeWidth={2.5} color="#4A4438" />
         </span>
       )}
     </span>

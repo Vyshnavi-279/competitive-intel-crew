@@ -53,7 +53,7 @@ function CircleDial({ used, attempted }: { used: number; attempted: number }) {
         x={cx} y={cy + 10}
         textAnchor="middle"
         fontSize="9"
-        fill="#8C8474"
+        fill="#4A4438"
         fontFamily="var(--font-inter), Inter, sans-serif"
       >
         /{attempted}
@@ -77,7 +77,7 @@ export function ReliabilityPanel({
         {/* Dial */}
         <div className="shrink-0">
           <CircleDial used={sourcesUsed} attempted={sourcesAttempted} />
-          <p className="text-[10px] text-center mt-1" style={{ color: "#8C8474" }}>
+          <p className="text-[12px] text-center mt-1" style={{ color: "#2E2A22" }}>
             sources used
           </p>
         </div>
@@ -116,7 +116,7 @@ export function ReliabilityPanel({
 function Stat({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div className="flex items-center justify-between text-[12px]">
-      <span style={{ color: "#8C8474" }}>{label}</span>
+      <span style={{ color: "#2E2A22" }}>{label}</span>
       <span
         className="font-tabular font-semibold px-2 py-0.5 rounded-full text-[11px]"
         style={{ background: `${color}33`, color }}

@@ -48,6 +48,8 @@ from backend.storage.db import (
     log_event,
     save_run,
     update_run_status,
+    delete_run,
+    delete_failed_runs,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,6 +154,29 @@ class RejectResponse(BaseModel):
 async def health() -> Dict[str, str]:
     """Liveness probe — returns 200 OK with ``{"status": "ok"}``."""
     return {"status": "ok"}
+
+
+@app.delete("/api/runs/failed", tags=["runs"])
+async def delete_all_failed() -> Dict[str, Any]:
+    """Delete all runs with status='failed' in one shot."""
+    try:
+        count = delete_failed_runs()
+        return {"deleted": count, "message": f"Deleted {count} failed run(s)."}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/runs/{run_id}", tags=["runs"])
+async def delete_run_endpoint(run_id: str) -> Dict[str, Any]:
+    """Delete a single run by ID (any status)."""
+    try:
+        if not delete_run(run_id):
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+        return {"deleted": run_id, "message": "Run deleted."}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/kpis", tags=["meta"])

@@ -35,11 +35,11 @@ export default function SettingsPage() {
         <p className="eyebrow mb-1">Configuration</p>
         <h1
           className="text-3xl font-semibold"
-          style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+          style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
         >
           Settings
         </h1>
-        <p className="mt-1 text-sm" style={{ color: "#8C8474" }}>
+        <p className="mt-1 text-sm" style={{ color: "#2E2A22" }}>
           Configure standing topics and the weekly briefing schedule.
         </p>
       </div>
@@ -54,7 +54,7 @@ export default function SettingsPage() {
             <p className="eyebrow">Weekly Schedule</p>
             <p
               className="text-base font-semibold mt-0.5"
-              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
             >
               Every Monday at 08:00
             </p>
@@ -63,12 +63,12 @@ export default function SettingsPage() {
 
         <div className="clay-inset rounded-[16px] p-4">
           <div className="flex items-start gap-2.5">
-            <Calendar size={14} strokeWidth={2} color="#8C8474" className="shrink-0 mt-0.5" />
+            <Calendar size={14} strokeWidth={2} color="#4A4438" className="shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-medium" style={{ color: "#4A4438" }}>
+              <p className="text-xs font-medium" style={{ color: "#2E2A22" }}>
                 Automated runs fire every Monday at 08:00 server-local time.
               </p>
-              <p className="text-xs mt-1" style={{ color: "#8C8474" }}>
+              <p className="text-xs mt-1" style={{ color: "#2E2A22" }}>
                 Triggered by <code className="text-[11px] bg-white/40 px-1 rounded">STANDING_TOPICS</code> env var.
                 Change the schedule via <code className="text-[11px] bg-white/40 px-1 rounded">SCHEDULER_HOUR</code> /
                 <code className="text-[11px] bg-white/40 px-1 rounded"> SCHEDULER_DAY_OF_WEEK</code>.
@@ -81,7 +81,7 @@ export default function SettingsPage() {
       {/* Standing topics card */}
       <div className="clay-raised p-6">
         <p className="eyebrow mb-1">Standing Topics</p>
-        <p className="text-xs mb-5" style={{ color: "#8C8474" }}>
+        <p className="text-xs mb-5" style={{ color: "#2E2A22" }}>
           These topics are automatically briefed each week. They reflect the
           <code className="mx-1 text-[11px] bg-white/40 px-1 rounded">STANDING_TOPICS</code>
           environment variable.
@@ -115,22 +115,22 @@ export default function SettingsPage() {
         )}
 
         {topics.length === 0 && (
-          <p className="text-sm mb-5" style={{ color: "#8C8474" }}>
+          <p className="text-sm mb-5" style={{ color: "#2E2A22" }}>
             No standing topics. Add one below.
           </p>
         )}
 
         {/* Add new topic */}
         <div className="clay-inset rounded-[20px] flex items-center gap-3 px-4 py-3">
-          <Plus size={15} strokeWidth={2.5} color="#8C8474" className="shrink-0" />
+          <Plus size={15} strokeWidth={2.5} color="#4A4438" className="shrink-0" />
           <input
             type="text"
             value={newTopic}
             onChange={(e) => setNewTopic(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Add a standing topic…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-[#8C8474]"
-            style={{ color: "#4A4438" }}
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-[#4A4438]"
+            style={{ color: "#2E2A22" }}
             aria-label="New standing topic"
           />
           <button
@@ -143,7 +143,7 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        <p className="text-xs mt-3" style={{ color: "#8C8474" }}>
+        <p className="text-xs mt-3" style={{ color: "#2E2A22" }}>
           Note: changes here are local session state. Update <code className="text-[11px] bg-white/40 px-1 rounded">STANDING_TOPICS</code> in your <code className="text-[11px] bg-white/40 px-1 rounded">.env</code> to persist across restarts.
         </p>
       </div>

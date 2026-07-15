@@ -45,11 +45,10 @@ from backend.tools.safe_search_tool import SafeSearchTool
 
 from backend.config import settings
 
-# FIX 1: Configure litellm for resilience on Groq free-tier rate limits.
-# num_retries=3 — litellm will automatically retry on 429/5xx up to 3 times.
-# request_timeout=30 — individual LLM calls time out after 30 s, preventing
-# a hung request from blocking the whole crew indefinitely.
-litellm.num_retries = 3
+# Configure litellm for Groq free-tier — keep retries low so a rate-limited
+# run fails fast rather than stacking 60s waits across 3 internal retries.
+# The outer retry loop in run_briefing() handles the meaningful retries.
+litellm.num_retries = 1
 litellm.request_timeout = 30
 
 # load_dotenv is called by config.py at import time; calling it again here is
@@ -94,9 +93,20 @@ if "anthropic" not in settings.model_name.lower():
         pass
 
 llm = LLM(
-    model=settings.model_name,          # read from .env — e.g. groq/llama-3.1-8b-instant
+    model=settings.model_name,          # text-only agents (coordinator, analyst, etc.)
     api_key=settings.groq_api_key,
     max_tokens=settings.max_tokens,
+)
+
+# llama-3.1-8b-instant is used exclusively for the Researcher because it
+# generates valid JSON tool calls reliably.  llama-3.3-70b-versatile produces
+# XML-format tool calls that Groq rejects with tool_use_failed.
+# Using 8b-instant only for the one agent that calls a tool keeps the
+# tool-call failure rate near zero while the smarter model handles reasoning.
+_researcher_llm = LLM(
+    model="groq/llama-3.1-8b-instant",
+    api_key=settings.groq_api_key,
+    max_tokens=400,   # researcher only needs short tool calls + a summary
 )
 
 # ---------------------------------------------------------------------------
@@ -108,15 +118,15 @@ _search_tool = SafeSearchTool()
 # ---------------------------------------------------------------------------
 # Per-agent iteration budgets
 # ---------------------------------------------------------------------------
-# Researcher needs the most steps (it uses a tool in a ReAct loop).
-# Coordinator, Analyst, Fact-Checker and Writer are pure text — 1-3 calls each.
-_RESEARCHER_MAX_ITER = max(5, MAX_STEPS)
-_WRITER_MAX_ITER = 3   # no tools; should produce output in a single LLM call
-_DEFAULT_MAX_ITER = 5  # coordinator, analyst, fact-checker
+# Per-agent iteration budgets — kept tight to minimise LLM calls on the
+# Groq free tier (30 RPM).  Fewer iterations = fewer 429s = faster runs.
+_RESEARCHER_MAX_ITER = 3   # tool user — 2-3 search loops is enough
+_WRITER_MAX_ITER = 2       # no tools; one LLM call produces the output
+_DEFAULT_MAX_ITER = 2      # coordinator, analyst, fact-checker — pure text
 
-# FIX 1: Agent-level max_rpm=20 — keeps each agent well under the 30 RPM
-# free-tier cap even if multiple agents are active in the sequential run.
-_AGENT_MAX_RPM = 20
+# FIX 1: Agent-level max_rpm=25 — keeps each agent just under the 30 RPM
+# free-tier cap for llama-3.3-70b-versatile.
+_AGENT_MAX_RPM = 25
 
 # ---------------------------------------------------------------------------
 # Agents
@@ -144,20 +154,21 @@ coordinator = Agent(
 researcher = Agent(
     role="Researcher",
     goal=(
-        f"Gather up to {settings.max_sources} reachable sources on the given "
-        "market topic, covering pricing moves, product launches, and market signals."
+        f"Run EXACTLY {settings.max_sources} web searches on the given topic, "
+        f"then STOP and report findings. Never run more than {settings.max_sources} searches."
     ),
     backstory=(
-        "You are a tireless web researcher who uses search tools to find "
-        "the most recent and relevant information on the topic.  You "
-        "always cite your sources inline using [Source Name](url)."
+        "You are a focused web researcher. You run a small number of targeted "
+        "searches, then immediately compile and report your findings with inline "
+        "citations. You never keep searching after your limit is reached."
     ),
     tools=[_search_tool],
     allow_delegation=False,
     verbose=True,
-    llm=llm,
+    llm=_researcher_llm,   # 8b-instant: reliable JSON tool calls on Groq
     max_iter=_RESEARCHER_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+    max_retry_limit=2,     # retry up to 2× on malformed tool-call generations
+    max_rpm=_AGENT_MAX_RPM,
 )
 
 analyst = Agent(
@@ -242,17 +253,20 @@ planning_task = Task(
 
 research_task = Task(
     description=(
-        f"Using the SafeSearch tool, gather up to {settings.max_sources} reachable sources "
-        "on {{topic}}.  Focus on:\n"
-        "  - Recent competitor pricing changes and product launches\n"
-        "  - Market signals (regulatory news, partnerships, funding rounds)\n\n"
-        "Run 4-6 searches, then STOP and report your findings.\n"
-        "Cite every piece of information inline with [Source Name](url).\n"
-        "If a source is unreachable, note that fact and move on."
+        f"Search for information on {{topic}} using the SafeSearch tool.\n\n"
+        f"HARD RULE: Run EXACTLY {settings.max_sources} searches, then STOP. "
+        f"Do NOT run more than {settings.max_sources} searches under any circumstances.\n"
+        f"When the tool says 'SEARCH LIMIT REACHED', stop immediately and report findings.\n\n"
+        "For each search, pick ONE focused query. Suggested queries:\n"
+        "  1. {topic} pricing changes 2025 2026\n"
+        "  2. {topic} product launches competitors\n"
+        "  3. {topic} market trends funding\n\n"
+        "After your searches, write bullet points of what you found. "
+        "Cite inline with [Source Name](url)."
     ),
     expected_output=(
-        "A concise list of bullet‑point research findings (max 20 bullets), "
-        "each with an inline citation marker."
+        f"Exactly {settings.max_sources} searches performed, then a concise list of "
+        "bullet-point findings each with an inline citation [Source Name](url)."
     ),
     agent=researcher,
     context=[planning_task],
@@ -468,10 +482,10 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
 
     try:
         # ---- Kick off the crew (with 429 retry logic) ---------------------
-        # Retry up to 4 times on rate-limit errors with exponential backoff.
+        # Retry up to 2 times on rate-limit errors with a short fixed delay.
         # litellm.num_retries=3 handles lower-level retries; this outer loop
         # handles full crew-kickoff level 429s that slip through.
-        _MAX_RETRIES = 4
+        _MAX_RETRIES = 2
         _attempt = 0
         result = None
         while True:
@@ -486,12 +500,9 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     or "RateLimitError" in exc_str
                 )
                 if is_rate_limit and _attempt < _MAX_RETRIES:
-                    # Parse retry_after from the error body if present.
-                    _retry_match = re.search(
-                        r"(?:retry[_\-]after|please try again in)[\":\s]+(\d+(?:\.\d+)?)",
-                        exc_str, re.IGNORECASE
-                    )
-                    _retry_after = max(60, int(float(_retry_match.group(1)))) if _retry_match else 60
+                    # Use a fixed 20s wait — short enough to not feel frozen,
+                    # long enough for the Groq RPM window to reset.
+                    _retry_after = 20
                     _attempt += 1
                     logger.warning(
                         "Rate-limited (429) on attempt %d/%d — waiting %ds before retry.",
@@ -554,6 +565,17 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         metadata.sources_skipped = _search_tool.skipped_sources
         metadata.sources_attempted = _search_tool.search_count + len(_search_tool.skipped_sources)
         metadata.total_steps = MAX_STEPS
+
+        # ---- KPI 1: % of claims cited (SPEC.md §3) -----------------------
+        # Count after governance has run so the percentage reflects the final
+        # briefing state seen by the reviewer, not the raw pre-governance output.
+        # FR-4 guarantees all surviving claims have citations, so this should
+        # always be 100.0 — making it explicit surfaces that guarantee visibly.
+        all_claims_after_gov = [c for s in sections for c in s.claims]
+        _total = len(all_claims_after_gov)
+        _cited = sum(1 for c in all_claims_after_gov if c.citations)
+        metadata.cited_claims_pct = round(_cited / _total * 100, 1) if _total > 0 else None
+
         # Internal state after the crew finishes is "completed"; the
         # governance checks have now run so we transition to
         # "pending_review" — a human must approve before "published".

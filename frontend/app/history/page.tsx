@@ -41,11 +41,11 @@ export default function HistoryPage() {
         <p className="eyebrow mb-1">Dashboard</p>
         <h1
           className="text-3xl font-semibold"
-          style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+          style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
         >
           Run History
         </h1>
-        <p className="mt-1 text-sm" style={{ color: "#8C8474" }}>
+        <p className="mt-1 text-sm" style={{ color: "#2E2A22" }}>
           {runs.length} briefing{runs.length !== 1 ? "s" : ""} total
         </p>
       </div>
@@ -65,13 +65,13 @@ export default function HistoryPage() {
                 active
                   ? {
                       background: "#F7F2E9",
-                      color: "#4A4438",
+                      color: "#2E2A22",
                       boxShadow: "4px 4px 8px rgba(74,68,56,0.2), -3px -3px 6px rgba(255,255,255,0.75)",
                       fontFamily: "var(--font-poppins), Poppins, sans-serif",
                     }
                   : {
                       background: "#EFE6D8",
-                      color: "#8C8474",
+                      color: "#2E2A22",
                       boxShadow: "inset 3px 3px 6px rgba(74,68,56,0.12), inset -3px -3px 6px rgba(255,255,255,0.5)",
                       fontFamily: "var(--font-poppins), Poppins, sans-serif",
                     }
@@ -83,7 +83,7 @@ export default function HistoryPage() {
                 className="text-[10px] px-1.5 py-0.5 rounded-full font-tabular"
                 style={{
                   background: active ? "#EFE6D8" : "#F7F2E9",
-                  color: "#8C8474",
+                  color: "#2E2A22",
                 }}
               >
                 {count}
@@ -97,7 +97,7 @@ export default function HistoryPage() {
       {loading && (
         <div className="clay-raised p-8 flex items-center gap-3">
           <span className="w-5 h-5 rounded-full border-2 border-[#93B6C4] border-t-transparent animate-spin" />
-          <span className="text-sm" style={{ color: "#8C8474" }}>Loading runs…</span>
+          <span className="text-sm" style={{ color: "#2E2A22" }}>Loading runs…</span>
         </div>
       )}
 
@@ -107,7 +107,7 @@ export default function HistoryPage() {
 
       {!loading && !error && filtered.length === 0 && (
         <div className="clay-raised p-10 text-center">
-          <p className="text-sm" style={{ color: "#8C8474" }}>
+          <p className="text-sm" style={{ color: "#2E2A22" }}>
             {filter === "all" ? "No runs yet. Start one from New Briefing." : `No ${filter.replace("_", " ")} runs.`}
           </p>
         </div>
@@ -127,8 +127,8 @@ export default function HistoryPage() {
                   aria-label={run.triggered_by === "scheduled" ? "Scheduled" : "Manual"}
                 >
                   {run.triggered_by === "scheduled"
-                    ? <Calendar size={14} strokeWidth={2} color="#8C8474" />
-                    : <MousePointer size={14} strokeWidth={2} color="#8C8474" />
+                    ? <Calendar size={14} strokeWidth={2} color="#4A4438" />
+                    : <MousePointer size={14} strokeWidth={2} color="#4A4438" />
                   }
                 </span>
 
@@ -136,16 +136,16 @@ export default function HistoryPage() {
                 <div className="flex-1 min-w-0">
                   <p
                     className="text-sm font-semibold truncate"
-                    style={{ color: "#4A4438", fontFamily: "var(--font-poppins), Poppins, sans-serif" }}
+                    style={{ color: "#2E2A22", fontFamily: "var(--font-poppins), Poppins, sans-serif" }}
                   >
                     {run.topic}
                   </p>
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                    <span className="text-xs font-tabular" style={{ color: "#8C8474" }}>
+                    <span className="text-xs font-tabular" style={{ color: "#2E2A22" }}>
                       {timeAgo(run.started_at)}
                     </span>
                     {run.sources_used > 0 && (
-                      <span className="text-xs font-tabular" style={{ color: "#8C8474" }}>
+                      <span className="text-xs font-tabular" style={{ color: "#2E2A22" }}>
                         · {run.sources_used} sources
                       </span>
                     )}
@@ -164,7 +164,7 @@ export default function HistoryPage() {
                 <ChevronRight
                   size={16}
                   strokeWidth={2}
-                  color="#8C8474"
+                  color="#4A4438"
                   className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
                 />
               </Link>

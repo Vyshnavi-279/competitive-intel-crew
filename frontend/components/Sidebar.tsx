@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FilePlus, LayoutDashboard, Settings, Zap } from "lucide-react";
+import { FilePlus, LayoutDashboard, Settings, Zap, History } from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/",          icon: FilePlus,       label: "New Briefing" },
-  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard"    },
-  { href: "/settings",  icon: Settings,       label: "Settings"     },
+  { href: "/",          icon: FilePlus,        label: "New Briefing",  color: "#A9C6AE" },
+  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard",     color: "#93B6C4" },
+  { href: "/history",   icon: History,         label: "History",       color: "#E8C4A2" },
+  { href: "/settings",  icon: Settings,        label: "Settings",      color: "#C98B7A" },
 ];
 
 export function Sidebar() {
@@ -15,41 +16,84 @@ export function Sidebar() {
 
   return (
     <aside
-      className="flex flex-col items-center gap-6 py-8 px-3 w-[72px] shrink-0 sticky top-0 h-screen"
-      style={{ background: "#F7F2E9" }}
+      className="flex flex-col gap-3 py-7 px-4 w-[200px] shrink-0 sticky top-0 h-screen"
+      style={{
+        background: "linear-gradient(180deg, #F7F2E9 0%, #EDE4D4 100%)",
+        boxShadow: "4px 0 24px rgba(74,68,56,0.10)",
+        borderRight: "1px solid rgba(74,68,56,0.07)",
+      }}
     >
-      {/* Logo knob */}
-      <div
-        className="clay-knob flex items-center justify-center w-11 h-11 mb-4 shrink-0"
-        aria-label="MarketPulse"
-      >
-        <Zap size={18} strokeWidth={2.5} color="#4A4438" />
+      {/* Logo */}
+      <div className="flex items-center gap-3 px-2 mb-6">
+        <div
+          className="clay-knob flex items-center justify-center w-11 h-11 shrink-0"
+          aria-label="MarketPulse"
+        >
+          <Zap size={20} strokeWidth={2.5} color="#4A4438" />
+        </div>
+        <div>
+          <p
+            className="font-bold text-base leading-tight"
+            style={{ fontFamily: "var(--font-poppins),sans-serif", color: "#2E2A22" }}
+          >
+            MarketPulse
+          </p>
+          <p className="eyebrow mt-0.5">Intel Crew</p>
+        </div>
       </div>
 
-      {/* Nav items */}
-      <nav className="flex flex-col gap-4 flex-1" aria-label="Main navigation">
-        {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
+      {/* Nav label */}
+      <p className="eyebrow px-3 mb-1">Navigation</p>
+
+      {/* Nav items — 3D raised buttons when active */}
+      <nav className="flex flex-col gap-2 flex-1" aria-label="Main navigation">
+        {NAV_ITEMS.map(({ href, icon: Icon, label, color }) => {
           const active = pathname === href || (href !== "/" && pathname.startsWith(href));
           return (
             <Link
               key={href}
               href={href}
-              title={label}
               aria-label={label}
               className={[
-                "relative flex items-center justify-center w-11 h-11 transition-all duration-200",
-                active ? "clay-knob" : "clay-knob--upcoming hover:clay-knob",
+                "flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200",
+                active
+                  ? "sidebar-item-active"
+                  : "hover:sidebar-item-hover",
               ].join(" ")}
+              style={active ? { transform: "scale(1.02)" } : {}}
             >
-              <Icon
-                size={18}
-                strokeWidth={2}
-                color={active ? "#4A4438" : "#8C8474"}
-              />
+              {/* Icon knob */}
+              <span
+                className="flex items-center justify-center w-8 h-8 rounded-xl shrink-0"
+                style={active ? {
+                  background: `linear-gradient(145deg, ${color}33, ${color}88)`,
+                  boxShadow: `3px 3px 7px rgba(74,68,56,0.18), -2px -2px 5px rgba(255,255,255,0.75)`,
+                } : {
+                  background: "transparent",
+                }}
+              >
+                <Icon
+                  size={17}
+                  strokeWidth={active ? 2.5 : 2}
+                  color={active ? "#2E2A22" : "#6B6358"}
+                />
+              </span>
+
+              <span
+                className="text-[14px] font-semibold leading-none"
+                style={{
+                  fontFamily: "var(--font-poppins),sans-serif",
+                  color: active ? "#2E2A22" : "#6B6358",
+                }}
+              >
+                {label}
+              </span>
+
+              {/* Active indicator dot */}
               {active && (
                 <span
-                  className="absolute -right-1 w-2 h-2 rounded-full"
-                  style={{ background: "#A9C6AE" }}
+                  className="ml-auto w-2 h-2 rounded-full shrink-0"
+                  style={{ background: color }}
                   aria-hidden="true"
                 />
               )}
@@ -58,10 +102,12 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Version eyebrow at bottom */}
-      <span className="eyebrow select-none" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>
-        v0.1
-      </span>
+      {/* Bottom section */}
+      <div className="clay-inset rounded-2xl px-4 py-3 mt-2">
+        <p className="eyebrow mb-1">System</p>
+        <p className="text-[12px] font-medium" style={{ color: "#2E2A22" }}>MarketPulse</p>
+        <p className="text-[11px]" style={{ color: "#6B6358" }}>v0.1 · Multi-agent AI</p>
+      </div>
     </aside>
   );
 }

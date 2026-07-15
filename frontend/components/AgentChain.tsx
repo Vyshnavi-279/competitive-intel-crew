@@ -39,7 +39,7 @@ function NodeKnob({ agent }: { agent: AgentNode }) {
   const Icon = getIcon(agent.id);
 
   let knobClass = "";
-  let iconColor = "#8C8474";
+  let iconColor = "#4A4438";
   let iconOpacity = 0.45;
 
   if (agent.status === "upcoming") {
@@ -77,9 +77,9 @@ function NodeKnob({ agent }: { agent: AgentNode }) {
 
       {/* Label */}
       <span
-        className="text-[11px] font-semibold text-center leading-tight"
+        className="text-[13px] font-semibold text-center leading-tight"
         style={{
-          color: agent.status === "upcoming" ? "#8C8474" : "#4A4438",
+          color: agent.status === "upcoming" ? "#4A4438" : "#4A4438",
           fontFamily: "var(--font-poppins), Poppins, sans-serif",
         }}
       >
@@ -88,7 +88,7 @@ function NodeKnob({ agent }: { agent: AgentNode }) {
 
       {/* Caption */}
       {agent.caption && (
-        <span className="text-[10px] text-center leading-snug max-w-[72px]" style={{ color: "#8C8474" }}>
+        <span className="text-[12px] text-center leading-snug max-w-[72px]" style={{ color: "#2E2A22" }}>
           {agent.caption}
         </span>
       )}

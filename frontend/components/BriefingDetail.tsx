@@ -23,7 +23,7 @@ function ClaimRow({ claim }: { claim: Claim }) {
     return (
       <div className="clay-unverified p-3 flex flex-col gap-2">
         <p className="eyebrow" style={{ color: "#b5743a" }}>Unverified</p>
-        <p className="text-sm leading-relaxed" style={{ color: "#4A4438" }}>{text}</p>
+        <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>{text}</p>
         {claim.citations.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {claim.citations.map((c, i) => <CitationChip key={i} citation={c} />)}
@@ -35,7 +35,7 @@ function ClaimRow({ claim }: { claim: Claim }) {
 
   return (
     <div className="flex flex-col gap-2 py-2.5 border-b border-[#EFE6D8] last:border-0">
-      <p className="text-sm leading-relaxed" style={{ color: "#4A4438" }}>{text}</p>
+      <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>{text}</p>
       {claim.citations.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {claim.citations.map((c, i) => <CitationChip key={i} citation={c} />)}
@@ -50,12 +50,12 @@ function SectionCard({ section }: { section: Section }) {
     <div className="clay-raised p-6">
       <h3
         className="text-base font-semibold mb-4"
-        style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+        style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
       >
         {section.title}
       </h3>
       {section.claims.length === 0 ? (
-        <p className="text-sm" style={{ color: "#8C8474" }}>No claims in this section.</p>
+        <p className="text-sm" style={{ color: "#2E2A22" }}>No claims in this section.</p>
       ) : (
         <div className="flex flex-col gap-1">
           {section.claims.map((claim, i) => (
@@ -150,7 +150,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
             <p className="eyebrow mb-1">Briefing</p>
             <h1
               className="text-xl font-semibold leading-snug"
-              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
             >
               {m.topic}
             </h1>
@@ -162,7 +162,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
           {/* Triggered by */}
           <span
             className="clay-inset-pill inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px]"
-            style={{ color: "#8C8474" }}
+            style={{ color: "#2E2A22" }}
           >
             {m.triggered_by === "scheduled"
               ? <><Calendar size={11} strokeWidth={2} /> Scheduled</>
@@ -171,15 +171,27 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
           </span>
 
           {/* Timestamp */}
-          <span className="text-xs" style={{ color: "#8C8474" }}>
+          <span className="text-xs" style={{ color: "#2E2A22" }}>
             {timeAgo(m.started_at)}
             {m.duration_seconds != null && ` · ${formatDuration(m.duration_seconds)}`}
           </span>
 
           {/* Source count */}
           {m.sources_used > 0 && (
-            <span className="text-xs font-tabular" style={{ color: "#8C8474" }}>
+            <span className="text-xs font-tabular" style={{ color: "#2E2A22" }}>
               {m.sources_used} sources used
+            </span>
+          )}
+
+          {/* KPI: % of claims cited (SPEC §3) — always 100% after governance */}
+          {m.cited_claims_pct != null && (
+            <span
+              className="clay-inset-pill inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold"
+              style={{ color: "#2e5e36" }}
+              title="% of surviving claims that carry at least one citation (FR-4). Citation guard drops any uncited claim before this briefing reached you."
+            >
+              <CheckCircle2 size={11} strokeWidth={2.5} />
+              {m.cited_claims_pct}% cited
             </span>
           )}
         </div>
@@ -198,10 +210,10 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
             <AlertTriangle size={18} strokeWidth={2} style={{ color: "#C98B7A", flexShrink: 0, marginTop: 2 }} />
             <div>
               <p className="eyebrow mb-1" style={{ color: "#7a3b2e" }}>Run Failed</p>
-              <p className="text-sm leading-relaxed" style={{ color: "#4A4438" }}>
+              <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>
                 {failureMessage}
               </p>
-              <p className="text-xs mt-3" style={{ color: "#8C8474" }}>
+              <p className="text-xs mt-3" style={{ color: "#2E2A22" }}>
                 Try starting a new briefing. If the problem persists, check your
                 Groq API key and rate-limit quota at{" "}
                 <a
@@ -222,7 +234,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
       {/* Sections — only shown for non-failed runs */}
       {!isFailed && (briefing.sections.length === 0 ? (
         <div className="clay-raised p-8 text-center">
-          <p className="text-sm" style={{ color: "#8C8474" }}>
+          <p className="text-sm" style={{ color: "#2E2A22" }}>
             No sections were parsed from this run&apos;s output.
           </p>
         </div>
@@ -243,7 +255,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
       {isPendingReview && (
         <div className="clay-raised p-5 flex flex-col gap-4">
           <p className="eyebrow">Human Review</p>
-          <p className="text-xs" style={{ color: "#8C8474" }}>
+          <p className="text-xs" style={{ color: "#2E2A22" }}>
             Review the briefing above before it reaches the strategy org. Approve to publish or reject with an optional reason.
           </p>
 
@@ -260,8 +272,8 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
                 onChange={(e) => setRejectReason(e.target.value)}
                 placeholder="e.g. Insufficient sourcing on Section 2"
                 rows={3}
-                className="bg-transparent text-sm resize-none outline-none placeholder:text-[#8C8474]"
-                style={{ color: "#4A4438" }}
+                className="bg-transparent text-sm resize-none outline-none placeholder:text-[#4A4438]"
+                style={{ color: "#2E2A22" }}
               />
             </div>
           )}
@@ -328,7 +340,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
             {briefing.unverified_flags
               .filter(f => !isRawError(f))
               .map((f, i) => (
-                <li key={i} className="flex items-start gap-1.5 text-xs" style={{ color: "#8C8474" }}>
+                <li key={i} className="flex items-start gap-1.5 text-xs" style={{ color: "#2E2A22" }}>
                   <AlertTriangle size={11} className="shrink-0 mt-0.5" style={{ color: "#E8C4A2" }} />
                   {f}
                 </li>

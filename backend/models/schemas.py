@@ -67,6 +67,10 @@ class RunMetadata(BaseModel):
     # DB and surfaced in the UI so operators can distinguish automated reports
     # from ad-hoc analyst requests.
     triggered_by: Literal["manual", "scheduled"] = "manual"
+    # KPI: % of claims in the final briefing that carry at least one citation.
+    # Populated after the governance layer runs; 100.0 means citation_guard
+    # has enforced that every surviving claim is cited (FR-4).
+    cited_claims_pct: Optional[float] = None
 
 
 class Briefing(BaseModel):

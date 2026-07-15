@@ -38,6 +38,9 @@ export interface RunMetadata {
   token_estimate: number | null;
   status: RunStatus;
   triggered_by: TriggeredBy;
+  /** KPI: % of surviving claims that carry at least one citation (FR-4).
+   *  Populated after governance runs; 100.0 = citation_guard enforced fully. */
+  cited_claims_pct: number | null;
 }
 
 export interface Briefing {
@@ -55,6 +58,7 @@ export interface RunSummary {
   sources_used: number;
   sources_skipped_count: number;
   triggered_by: TriggeredBy;
+  duration_seconds: number | null;
 }
 
 // KPI data from GET /api/kpis

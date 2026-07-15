@@ -86,7 +86,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
     return (
       <div className="clay-raised p-8 flex items-center gap-3">
         <span className="w-5 h-5 rounded-full border-2 border-[#93B6C4] border-t-transparent animate-spin" />
-        <span className="text-sm" style={{ color: "#8C8474" }}>Connecting…</span>
+        <span className="text-sm" style={{ color: "#2E2A22" }}>Connecting…</span>
       </div>
     );
   }
@@ -106,11 +106,11 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
             </p>
             <h2
               className="text-xl font-semibold leading-snug"
-              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+              style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
             >
               {m.topic}
             </h2>
-            <p className="text-xs mt-1" style={{ color: "#8C8474" }}>
+            <p className="text-xs mt-1" style={{ color: "#2E2A22" }}>
               Started {timeAgo(m.started_at)}
               {m.duration_seconds != null && ` · ${formatDuration(m.duration_seconds)}`}
             </p>
@@ -131,7 +131,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
         {logs.length === 0 ? (
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-full border-2 border-[#93B6C4] border-t-transparent animate-spin" />
-            <span className="text-xs" style={{ color: "#8C8474", fontFamily: "monospace" }}>
+            <span className="text-xs" style={{ color: "#2E2A22", fontFamily: "monospace" }}>
               Agents initialising…
             </span>
           </div>
@@ -141,7 +141,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
               <li
                 key={i}
                 className="text-xs"
-                style={{ color: "#8C8474", fontFamily: "monospace" }}
+                style={{ color: "#2E2A22", fontFamily: "monospace" }}
               >
                 {log}
               </li>
@@ -158,7 +158,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
 
       {/* Done — redirect note */}
       {!isRunning && m.status !== "failed" && (
-        <p className="text-xs text-center" style={{ color: "#8C8474" }}>
+        <p className="text-xs text-center" style={{ color: "#2E2A22" }}>
           Redirecting to briefing…
         </p>
       )}
@@ -168,7 +168,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
             Run failed
           </p>
           {briefing.unverified_flags.map((f, i) => (
-            <p key={i} className="text-xs mt-1" style={{ color: "#8C8474" }}>{f}</p>
+            <p key={i} className="text-xs mt-1" style={{ color: "#2E2A22" }}>{f}</p>
           ))}
         </div>
       )}

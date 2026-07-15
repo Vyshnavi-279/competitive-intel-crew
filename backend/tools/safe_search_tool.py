@@ -1,116 +1,107 @@
 """
-SafeSearchTool — wraps SerperDevTool with a runaway-source guard.
+SafeSearchTool — wraps the Serper API with a per-run source cap.
 
 WHY THIS GUARDRAIL EXISTS:
-Without a cap, a CrewAI agent could send hundreds of search API calls in a
-single run, racking up cost and potentially hitting rate limits.  The
-runaway guard enforces a per-instance maximum (MAX_SOURCES from env,
-default 15).  Once the limit is reached, further calls return a polite
-refusal instead of making an HTTP request, and the crew run continues
-gracefully.
-
-Additionally, every underlying API call is wrapped in try/except so that
-transient network issues or timeout errors never crash the entire crew run.
-Skipped sources are recorded in self.skipped_sources so RunMetadata can
-report them later.
+Without a cap, a CrewAI agent could fire hundreds of search calls in one run.
+The runaway guard enforces MAX_SOURCES (env var, default 15).  Once reached,
+further calls return a STOP message so the agent knows to compile findings.
+Every call is wrapped in try/except so transient failures never crash the run.
 """
 
 import os
 import warnings
-from typing import List
+from typing import List, Type
 
-import requests
+from pydantic import BaseModel, Field
 
-# crewai_tools.BaseTool uses an old-style Pydantic v1 `class Config` block
-# internally.  This is a third-party library issue and not actionable from our
-# code; suppress the warning so it doesn't pollute server logs or test output.
+# Suppress pydantic v1 compat warning from crewai_tools internals
 warnings.filterwarnings(
     "ignore",
     message="Support for class-based `config` is deprecated",
     category=DeprecationWarning,
 )
 
+import requests
 from crewai.tools import BaseTool
 
 
+# ---------------------------------------------------------------------------
+# Step 3 fix: minimal, flat schema — no additionalProperties, no nesting.
+# Groq rejects schemas with additionalProperties:false; keeping it simple
+# also prevents CrewAI from bloating the tool description with the schema dump.
+# ---------------------------------------------------------------------------
+
+class _SearchInput(BaseModel):
+    """Input for SafeSearch."""
+    query: str = Field(description="The search query string, e.g. 'AI tools pricing 2026'")
+
+    @classmethod
+    def model_json_schema(cls, **kwargs):
+        """Return schema without additionalProperties — Groq rejects that field."""
+        schema = super().model_json_schema(**kwargs)
+        schema.pop("additionalProperties", None)
+        return schema
+
+
 class SafeSearchTool(BaseTool):
-    """A search tool with a per-instance call limit and exception safety.
-
-    Uses the Serper API directly instead of wrapping SerperDevTool, because
-    SerperDevTool._run() has incompatible argument handling in some versions.
-
-    Public attributes (read after the crew run):
-        search_count   -- how many searches actually went through.
-        skipped_sources -- list of query strings that failed or were refused.
-    """
+    """Search the web. Use query='your search terms'. Example: query='AI tools 2026 pricing'"""
 
     name: str = "SafeSearch"
-    description: str = (
-        "Search the web for competitive intelligence. "
-        "Each invocation counts toward a per-run source limit."
-    )
+    # Short, unambiguous description — no schema dump injected.
+    # CrewAI appends schema info automatically; keeping this brief prevents
+    # the LLM from seeing a 300-char description that confuses tool-call generation.
+    description: str = "Search the web. Input: query (string). Example: query='AI developer tools 2026'"
+    args_schema: Type[BaseModel] = _SearchInput
 
-    # Expose internals as public attributes so the crew/pipeline can read them.
+    # Public counters — read by crew.py after the run
     search_count: int = 0
     skipped_sources: List[str] = []
 
     def _run(self, query: str, **kwargs) -> str:
-        """Execute a search, subject to the runaway source cap.
-
-        Returns the search results text, or a refusal / error message.
-        Never raises.
-        """
+        """Execute one web search, subject to the source cap. Never raises."""
         max_sources = int(os.getenv("MAX_SOURCES", "15"))
         api_key = os.getenv("SERPER_API_KEY")
 
-        # ---- Runaway guard -------------------------------------------------
+        # ---- Runaway guard ------------------------------------------------
         if self.search_count >= max_sources:
-            msg = (
-                f"[SafeSearchTool] Source cap of {max_sources} reached. "
-                f"Skipping query: '{query}'"
-            )
             self.skipped_sources.append(query)
-            return msg
+            return (
+                f"SEARCH LIMIT REACHED ({max_sources} searches used). "
+                "STOP calling this tool. Compile your findings now and write your final answer."
+            )
 
         if not api_key:
             self.skipped_sources.append(query)
-            return f"[SafeSearchTool] No SERPER_API_KEY configured. Skipping query: '{query}'"
+            return f"[SafeSearch] No SERPER_API_KEY configured. Skipping: '{query}'"
 
-        # ---- Make the real call, wrapped in a shield -----------------------
+        # ---- Live call ----------------------------------------------------
         try:
             resp = requests.post(
                 "https://google.serper.dev/search",
                 json={"q": query},
-                headers={
-                    "X-API-KEY": api_key,
-                    "Content-Type": "application/json",
-                },
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
                 timeout=15,
             )
             resp.raise_for_status()
             data = resp.json()
 
-            # Format results for the LLM agent
             results = []
             for item in data.get("organic", []):
-                title = item.get("title", "")
-                link = item.get("link", "")
+                title   = item.get("title", "")
+                link    = item.get("link", "")
                 snippet = item.get("snippet", "")
                 results.append(f"- {title}\n  {link}\n  {snippet}")
 
             self.search_count += 1
-            return "\n\n".join(results) if results else f"[SafeSearchTool] No results found for: '{query}'"
+            if not results:
+                return f"[SafeSearch] No results for: '{query}'"
+            return "\n\n".join(results)
 
         except Exception as exc:
             self.skipped_sources.append(query)
-            # Give a more actionable message for 403 (invalid/expired Serper key)
             if "403" in str(exc):
                 return (
-                    f"[SafeSearchTool] Serper API key is invalid or unauthorized (403). "
-                    f"Get a valid key at https://serper.dev and set SERPER_API_KEY in .env. "
-                    f"Skipping query: '{query}'"
+                    "[SafeSearch] Serper API key invalid (403). "
+                    "Set SERPER_API_KEY in .env. Skipping this query."
                 )
-            return (
-                f"[SafeSearchTool] Source unreachable, skipped. "
-                f"Query: '{query}' -- {exc}"
-            )
+            return f"[SafeSearch] Source unreachable, skipped. Query: '{query}' — {exc}"

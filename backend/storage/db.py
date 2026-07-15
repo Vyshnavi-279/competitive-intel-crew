@@ -160,6 +160,32 @@ def save_run(briefing: Briefing) -> None:
         conn.commit()
 
 
+def delete_run(run_id: str) -> bool:
+    """Delete a run and its audit log entries.
+
+    Returns True if the run existed and was deleted, False if not found.
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM audit_log WHERE run_id = ?", (run_id,))
+        cursor = conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_failed_runs() -> int:
+    """Delete all runs with status='failed'. Returns count deleted."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT run_id FROM runs WHERE status = 'failed'"
+        ).fetchall()
+        run_ids = [r["run_id"] for r in rows]
+        for rid in run_ids:
+            conn.execute("DELETE FROM audit_log WHERE run_id = ?", (rid,))
+        cursor = conn.execute("DELETE FROM runs WHERE status = 'failed'")
+        conn.commit()
+    return cursor.rowcount
+
+
 def get_run(run_id: str) -> Optional[Dict[str, Any]]:
     """Return the full briefing dict for *run_id*, or None if not found.
 
@@ -194,7 +220,8 @@ def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT run_id, topic, started_at, status,
-                   sources_used, sources_attempted, triggered_by
+                   sources_used, sources_attempted, triggered_by,
+                   duration_seconds
             FROM   runs
             ORDER  BY started_at DESC
             LIMIT  ?

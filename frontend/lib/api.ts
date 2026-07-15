@@ -59,3 +59,15 @@ export async function getHealth(): Promise<{ status: string }> {
 export async function fetchKpis(): Promise<KpiData> {
   return apiFetch<KpiData>("/api/kpis");
 }
+
+/** DELETE /api/runs/{id} — delete a single run */
+export async function deleteRun(
+  runId: string
+): Promise<{ deleted: string; message: string }> {
+  return apiFetch(`/api/runs/${runId}`, { method: "DELETE" });
+}
+
+/** DELETE /api/runs/failed — bulk-delete all failed runs */
+export async function deleteAllFailed(): Promise<{ deleted: number; message: string }> {
+  return apiFetch("/api/runs/failed", { method: "DELETE" });
+}

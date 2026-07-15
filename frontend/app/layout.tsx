@@ -29,9 +29,9 @@ export default function RootLayout({
       lang="en"
       className={`${inter.variable} ${poppins.variable} h-full`}
     >
-      <body className="min-h-full flex antialiased" style={{ background: "#EFE6D8" }}>
+      <body className="min-h-full flex antialiased" style={{ background: "#EFE6D8", color: "#2E2A22" }}>
         <Sidebar />
-        <main className="flex-1 min-h-screen overflow-y-auto p-6 lg:p-8">
+        <main className="flex-1 min-h-screen overflow-y-auto p-6 lg:p-10">
           {children}
         </main>
       </body>

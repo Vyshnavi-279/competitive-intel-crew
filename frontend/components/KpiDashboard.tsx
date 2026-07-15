@@ -37,12 +37,12 @@ function KpiCard({ icon: Icon, label, value, sub, pct, color }: KpiCardProps) {
       <div className="flex items-end justify-between gap-2">
         <div>
           <p
-            className="text-2xl font-bold leading-none"
-            style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+            className="text-3xl font-bold leading-none"
+            style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#2E2A22" }}
           >
             {value}
           </p>
-          <p className="text-[11px] mt-1" style={{ color: "#8C8474" }}>{sub}</p>
+          <p className="text-[13px] mt-1" style={{ color: "#2E2A22" }}>{sub}</p>
         </div>
 
         {pct != null && (
@@ -141,16 +141,16 @@ export function KpiDashboard({ kpis }: KpiDashboardProps) {
 
       {/* Summary row */}
       <div className="mt-3 clay-inset rounded-[20px] px-5 py-3 flex flex-wrap gap-4 items-center">
-        <span className="text-xs" style={{ color: "#8C8474" }}>
-          <span className="font-semibold" style={{ color: "#4A4438" }}>{kpis.total_runs}</span> total runs
+        <span className="text-xs" style={{ color: "#2E2A22" }}>
+          <span className="font-semibold" style={{ color: "#2E2A22" }}>{kpis.total_runs}</span> total runs
         </span>
-        <span className="text-xs" style={{ color: "#8C8474" }}>
+        <span className="text-xs" style={{ color: "#2E2A22" }}>
           <span className="font-semibold" style={{ color: "#A9C6AE" }}>{kpis.successful_runs}</span> succeeded
         </span>
-        <span className="text-xs" style={{ color: "#8C8474" }}>
+        <span className="text-xs" style={{ color: "#2E2A22" }}>
           <span className="font-semibold" style={{ color: "#C98B7A" }}>{kpis.failed_runs}</span> failed
         </span>
-        <span className="text-xs" style={{ color: "#8C8474" }}>
+        <span className="text-xs" style={{ color: "#2E2A22" }}>
           <span className="font-semibold" style={{ color: "#93B6C4" }}>{kpis.published_runs}</span> published
         </span>
       </div>
