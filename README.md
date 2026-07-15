@@ -149,3 +149,9 @@ The five test scenarios cover: full pipeline trace, partial source-failure handl
 - **Fact-checker agent** — a dedicated fifth agent that cross-checks the Writer's claims against the raw research before the briefing reaches the governance layer.
 - **Human review gate** — every completed briefing lands in `pending_review`; a reviewer must explicitly approve (publish) or reject it via the dashboard before it reaches the broader org.
 - **Scheduled weekly runs** — APScheduler fires `run_briefing()` every Monday at 08:00 for a configurable list of standing topics (`STANDING_TOPICS` env var), with audit-log entries distinguishing automated runs (`triggered_by: scheduled`) from manual ones.
+
+- # Competitive Intelligence Crew (MarketPulse)
+
+## 🚀 Live Deployments
+* **Frontend Dashboard (Netlify):** [https://competitive-intel-crew.netlify.app](https://competitive-intel-crew.netlify.app)
+* **Backend API Gateway (Render):** *Running live on Render cluster*
