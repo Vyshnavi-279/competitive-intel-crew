@@ -11,10 +11,14 @@ are enforced at the framework level.
 
 import os
 
+# Read from the centralised Settings object so that .env is guaranteed to be
+# loaded before these values are evaluated (config.py calls load_dotenv at
+# import time, before any other backend module uses these constants).
+from backend.config import settings
+
 # Maximum number of reasoning iterations each agent is allowed.
-# Read from env so it can be tuned per environment (dev / prod / batch).
-MAX_STEPS: int = int(os.getenv("MAX_STEPS", "25"))
+MAX_STEPS: int = settings.max_steps
 
 # Maximum wall-clock seconds the entire crew run may take.
-# CrewAI's max_execution_time is specified in seconds.
+# Not part of the Settings dataclass (rarely needs tuning), so read directly.
 MAX_EXECUTION_SECONDS: int = int(os.getenv("MAX_EXECUTION_SECONDS", "600"))

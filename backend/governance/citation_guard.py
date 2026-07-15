@@ -29,11 +29,15 @@ from backend.models.schemas import Claim, Section
 def enforce_citations(
     sections: List[Section],
 ) -> Tuple[List[Section], List[str]]:
-    """Remove every Claim that has no citations.
+    """Downgrade every Claim that has no citations to verified=False.
+
+    Rather than silently dropping uncited claims (which produces empty
+    briefings when the model doesn't follow citation format), we keep them
+    but mark them unverified so the UI can surface the ⚠ badge.
 
     Returns:
-        cleaned_sections — same structure, but uncited claims are gone.
-        flags            — human‑readable notes describing what was dropped.
+        cleaned_sections — same structure, uncited claims marked verified=False.
+        flags            — human-readable notes describing what was downgraded.
     """
     flags: List[str] = []
     cleaned: List[Section] = []
@@ -44,7 +48,11 @@ def enforce_citations(
             if not claim.is_properly_sourced:
                 snippet = claim.text[:60] + ("..." if len(claim.text) > 60 else "")
                 flags.append(f"Dropped uncited claim: '{snippet}'")
-                # Claim is dropped — does NOT appear in surviving list.
+                # Keep the claim but mark it unverified so the user sees it
+                # with the ⚠ badge rather than seeing an empty section.
+                surviving.append(
+                    Claim(text=claim.text, citations=[], verified=False)
+                )
             else:
                 surviving.append(claim)
         cleaned.append(Section(title=section.title, claims=surviving))

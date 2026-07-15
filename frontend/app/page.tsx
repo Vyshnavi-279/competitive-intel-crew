@@ -1,271 +1,154 @@
 "use client";
 
-// app/page.tsx
-// MarketPulse — Weekly Competitive Brief dashboard.
-//
-// Layout (≥ lg screens):
-//   ┌──────────────┬──────────────────────────────────┬──────────────┐
-//   │ CrewRunPanel │       3 × BriefingCard           │ Reliability  │
-//   │  (fixed 280) │  (scrollable, Executive Summary  │   Panel      │
-//   │              │   featured at top)               │  (fixed 300) │
-//   └──────────────┴──────────────────────────────────┴──────────────┘
-//
-// Mobile: all panels stack vertically.
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Sparkles, ArrowRight } from "lucide-react";
+import { triggerRun } from "@/lib/api";
 
-import { useCallback, useState } from "react";
-import {
-  AlertTriangle,
-  Calendar,
-  CheckCircle,
-  Clock,
-  Loader,
-  Rss,
-} from "lucide-react";
+const STANDING_TOPICS = [
+  "AI developer tools market 2026",
+  "Cloud infrastructure pricing trends",
+  "Open-source LLM landscape",
+  "SaaS note-taking apps pricing",
+  "Enterprise AI adoption signals",
+];
 
-import BriefingCard from "@/app/components/BriefingCard";
-import CrewRunPanel from "@/app/components/CrewRunPanel";
-import ReliabilityPanel from "@/app/components/ReliabilityPanel";
-import type { Briefing } from "@/app/lib/types";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const SECTION_ORDER = [
-  "Executive Summary",
-  "Competitor Pricing & Product Moves",
-  "Market Signals",
-] as const;
-
-function fmtRunDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("en-US", {
-      weekday: "short",
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}
-
-function fmtWeek(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const oneJan = new Date(d.getFullYear(), 0, 1);
-    const week = Math.ceil(
-      ((d.getTime() - oneJan.getTime()) / 86400000 + oneJan.getDay() + 1) / 7
-    );
-    return `W${week} · ${d.getFullYear()}`;
-  } catch {
-    return "";
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Empty / loading state
-// ---------------------------------------------------------------------------
-
-function EmptyState() {
+// Simple leaf/dot decorative SVG for empty state
+function EmptyStateDecoration() {
   return (
-    <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center px-8">
-      <div className="w-16 h-16 rounded-2xl bg-[#0a1929] border border-[#1e3a54] flex items-center justify-center mb-5 shadow-[0_0_40px_rgba(20,184,166,0.08)]">
-        <Rss className="w-7 h-7 text-teal-500/60" />
-      </div>
-      <h2 className="text-lg font-semibold text-slate-400 mb-2">
-        No briefing loaded
-      </h2>
-      <p className="text-sm text-slate-600 max-w-xs leading-relaxed">
-        Enter a topic in the left panel and click{" "}
-        <span className="text-teal-500 font-medium">Run Briefing</span> to
-        generate a competitive intelligence report, or select a past run from
-        the history list.
-      </p>
-    </div>
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none opacity-30"
+      viewBox="0 0 400 300"
+      fill="none"
+      aria-hidden="true"
+    >
+      {/* Soft leaf shapes */}
+      <ellipse cx="60" cy="80" rx="28" ry="44" fill="#A9C6AE" transform="rotate(-30 60 80)" />
+      <ellipse cx="340" cy="220" rx="22" ry="36" fill="#93B6C4" transform="rotate(20 340 220)" />
+      <circle cx="320" cy="60" r="18" fill="#E8C4A2" />
+      <circle cx="80" cy="240" r="12" fill="#C98B7A" opacity="0.5" />
+      <ellipse cx="200" cy="270" rx="16" ry="26" fill="#A9C6AE" transform="rotate(10 200 270)" />
+    </svg>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  switch (status) {
-    case "completed":
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-900/50 text-teal-400 border border-teal-700/40">
-          <CheckCircle className="w-3.5 h-3.5" /> Completed
-        </span>
-      );
-    case "published":
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-900/50 text-teal-300 border border-teal-600/40">
-          <CheckCircle className="w-3.5 h-3.5" /> Published
-        </span>
-      );
-    case "failed":
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-900/40 text-red-400 border border-red-700/40">
-          <AlertTriangle className="w-3.5 h-3.5" /> Failed
-        </span>
-      );
-    case "running":
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-900/40 text-teal-400 border border-teal-700/40 animate-pulse">
-          <Loader className="w-3.5 h-3.5 animate-spin" /> Running
-        </span>
-      );
-    default:
-      return (
-        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-900/40 text-amber-400 border border-amber-700/40">
-          <Clock className="w-3.5 h-3.5" /> {status}
-        </span>
-      );
+export default function NewBriefingPage() {
+  const router = useRouter();
+  const [topic, setTopic] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const t = topic.trim();
+    if (!t) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const briefing = await triggerRun(t);
+      router.push(`/runs/${briefing.metadata.run_id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start run");
+      setLoading(false);
+    }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-export default function DashboardPage() {
-  const [briefing, setBriefing] = useState<Briefing | null>(null);
-  const [activeRunId, setActiveRunId] = useState<string | undefined>();
-
-  const handleBriefingLoaded = useCallback((b: Briefing) => {
-    setBriefing(b);
-    setActiveRunId(b.metadata.run_id);
-  }, []);
-
-  // Sort sections into the canonical order, ignoring sections with unexpected titles
-  const orderedSections = briefing
-    ? SECTION_ORDER.flatMap((title) => {
-        const found = briefing.sections.find((s) => s.title === title);
-        return found ? [found] : [];
-      })
-    : [];
-
-  const meta = briefing?.metadata;
 
   return (
-    <div className="flex h-screen bg-[#080f1a] text-white overflow-hidden">
-
-      {/* ── Left sidebar ───────────────────────────────────────────────── */}
-      <div className="w-72 flex-shrink-0 h-full overflow-hidden">
-        <CrewRunPanel
-          onBriefingLoaded={handleBriefingLoaded}
-          activeRunId={activeRunId}
-        />
+    <div className="max-w-2xl mx-auto">
+      {/* Page heading */}
+      <div className="mb-8">
+        <p className="eyebrow mb-1">MarketPulse</p>
+        <h1
+          className="text-3xl font-semibold leading-tight"
+          style={{ fontFamily: "var(--font-poppins), Poppins, sans-serif", color: "#4A4438" }}
+        >
+          New Briefing
+        </h1>
+        <p className="mt-1 text-sm" style={{ color: "#8C8474" }}>
+          Enter a topic and the crew will research, analyse, and draft a sourced competitive-intelligence report.
+        </p>
       </div>
 
-      {/* ── Main content area ──────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      {/* Hero card with decoration */}
+      <div className="clay-hero p-8 relative overflow-hidden">
+        <EmptyStateDecoration />
 
-        {/* Header */}
-        <header className="flex-shrink-0 px-6 py-4 border-b border-[#1a2e47] bg-[#0a1420]">
-          {meta ? (
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                {/* Week label */}
-                <div className="flex items-center gap-2 mb-1">
-                  <Calendar className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" />
-                  <span className="text-xs font-mono text-teal-500 uppercase tracking-widest">
-                    {fmtWeek(meta.started_at)}
-                  </span>
-                  <span className="text-[11px] text-slate-600">
-                    {fmtRunDate(meta.started_at)}
-                  </span>
-                </div>
-                {/* Topic */}
-                <h1 className="text-lg font-bold text-slate-100 truncate leading-tight">
-                  {meta.topic}
-                </h1>
+        <div className="relative z-10">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+            {/* Topic input */}
+            <label className="flex flex-col gap-2">
+              <span className="eyebrow">Research Topic</span>
+              <div className="clay-inset rounded-[20px] flex items-center gap-3 px-4 py-3">
+                <Sparkles size={16} strokeWidth={2} color="#8C8474" className="shrink-0" />
+                <input
+                  type="text"
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  placeholder="e.g. AI note-taking app pricing trends 2026"
+                  disabled={loading}
+                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-[#8C8474] disabled:opacity-60"
+                  style={{ color: "#4A4438", fontFamily: "var(--font-inter), Inter, sans-serif" }}
+                  aria-label="Research topic"
+                />
               </div>
+            </label>
 
-              {/* Meta badges */}
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <StatusBadge status={meta.status} />
-                {meta.duration_seconds !== null && (
-                  <span className="text-xs text-slate-500 flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {Math.round(meta.duration_seconds)}s
-                  </span>
-                )}
-                {meta.sources_skipped.length > 0 && (
-                  <span className="inline-flex items-center gap-1 text-xs text-amber-400">
-                    <AlertTriangle className="w-3 h-3" />
-                    {meta.sources_skipped.length} skipped
-                  </span>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-3">
-              <div className="w-5 h-5 rounded bg-teal-500/20 flex items-center justify-center">
-                <Rss className="w-3 h-3 text-teal-500" />
-              </div>
-              <span className="text-sm font-semibold text-slate-400">
-                MarketPulse — Weekly Competitive Brief
-              </span>
-            </div>
-          )}
-        </header>
-
-        {/* Scrollable content + right rail */}
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-
-          {/* Briefing sections */}
-          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4 min-w-0">
-            {briefing === null ? (
-              <EmptyState />
-            ) : briefing.metadata.status === "failed" ? (
-              <div className="flex flex-col items-center justify-center min-h-[300px] text-center px-6">
-                <AlertTriangle className="w-10 h-10 text-red-400 mb-3" />
-                <h2 className="text-base font-semibold text-red-300 mb-2">
-                  Run Failed
-                </h2>
-                {briefing.unverified_flags.length > 0 && (
-                  <p className="text-sm text-slate-500 max-w-md">
-                    {briefing.unverified_flags[0]}
-                  </p>
-                )}
-              </div>
-            ) : orderedSections.length === 0 ? (
-              <div className="flex items-center justify-center min-h-[300px]">
-                <p className="text-sm text-slate-500 italic">
-                  No sections were parsed from this run.
-                </p>
-              </div>
-            ) : (
-              <>
-                {orderedSections.map((section, i) => (
-                  <BriefingCard
-                    key={section.title}
-                    section={section}
-                    featured={i === 0} // Executive Summary is featured
-                  />
-                ))}
-
-                {/* Run ID footer */}
-                <p className="text-[10px] text-slate-700 font-mono pt-2 pb-4">
-                  run: {meta?.run_id}
-                </p>
-              </>
+            {/* Error message */}
+            {error && (
+              <p className="text-sm px-1" style={{ color: "#C98B7A" }}>
+                ⚠ {error}
+              </p>
             )}
-          </div>
 
-          {/* ── Right rail — Reliability panel (hidden on narrow screens) ─ */}
-          {briefing && (
-            <aside className="hidden xl:block w-80 flex-shrink-0 overflow-y-auto px-4 py-5 border-l border-[#1a2e47]">
-              <ReliabilityPanel briefing={briefing} />
-            </aside>
-          )}
+            {/* Submit button */}
+            <button
+              type="submit"
+              disabled={loading || !topic.trim()}
+              className="self-start clay-knob--done flex items-center gap-2.5 px-6 py-3 text-sm font-semibold rounded-full transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-95 active:scale-95"
+              style={{ color: "#2e5e36", fontFamily: "var(--font-poppins), Poppins, sans-serif" }}
+            >
+              {loading ? (
+                <>
+                  <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                  Starting run…
+                </>
+              ) : (
+                <>
+                  Run Briefing
+                  <ArrowRight size={16} strokeWidth={2.5} />
+                </>
+              )}
+            </button>
+          </form>
         </div>
+      </div>
 
-        {/* Mobile reliability panel — appears below briefing on small screens */}
-        {briefing && (
-          <div className="xl:hidden px-4 py-4 border-t border-[#1a2e47]">
-            <ReliabilityPanel briefing={briefing} />
-          </div>
-        )}
-      </main>
+      {/* Standing topics */}
+      <div className="mt-8">
+        <p className="eyebrow mb-3">Standing Topics</p>
+        <div className="flex flex-wrap gap-2">
+          {STANDING_TOPICS.map((t) => (
+            <button
+              key={t}
+              onClick={() => setTopic(t)}
+              disabled={loading}
+              className="clay-inset-pill px-3.5 py-2 text-[12px] font-medium transition-all duration-150 hover:brightness-95 active:scale-95 disabled:opacity-50"
+              style={{
+                color: "#8C8474",
+                background: "#f5e2ce",
+                boxShadow: "inset 3px 3px 6px rgba(74,68,56,0.10), inset -3px -3px 6px rgba(255,255,255,0.5)",
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tip */}
+      <p className="mt-6 text-xs" style={{ color: "#8C8474" }}>
+        Runs take 2–5 minutes. You'll be taken to the live monitor automatically.
+      </p>
     </div>
   );
 }

@@ -30,7 +30,7 @@ warnings.filterwarnings(
     category=DeprecationWarning,
 )
 
-from crewai_tools import BaseTool
+from crewai.tools import BaseTool
 
 
 class SafeSearchTool(BaseTool):

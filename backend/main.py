@@ -31,6 +31,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -150,6 +151,70 @@ class RejectResponse(BaseModel):
 async def health() -> Dict[str, str]:
     """Liveness probe — returns 200 OK with ``{"status": "ok"}``."""
     return {"status": "ok"}
+
+
+@app.get("/api/status", tags=["meta"])
+async def api_status() -> Dict[str, Any]:
+    """Return Groq account/model status.
+
+    Calls the Groq models endpoint to confirm the API key is valid and the
+    configured model is available.  Returns a structured summary suitable
+    for display in the frontend header.  If the upstream call fails for any
+    reason, status is set to 'unknown' so the app stays usable.
+    """
+    model_name: str = settings.model_name
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            )
+            if resp.status_code == 401:
+                return {
+                    "model": model_name,
+                    "is_free_tier": True,
+                    "daily_limit": 0,
+                    "status": "error",
+                    "message": "Invalid Groq API key. Check GROQ_API_KEY in .env",
+                }
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Confirm the configured model exists in the returned list
+        available_ids = {m.get("id", "") for m in data.get("data", [])}
+        # Model name in .env is "groq/llama-3.3-70b-versatile"; strip provider prefix
+        bare_model = model_name.replace("groq/", "")
+        model_available = bare_model in available_ids
+
+        if not model_available:
+            return {
+                "model": model_name,
+                "is_free_tier": True,
+                "daily_limit": 0,
+                "status": "error",
+                "message": (
+                    f"Model '{bare_model}' not found on Groq. "
+                    f"Check MODEL_NAME in .env. Available: {sorted(available_ids)}"
+                ),
+            }
+
+        return {
+            "model": model_name,
+            "is_free_tier": True,
+            "daily_limit": 0,
+            "status": "ok",
+            "message": "Groq API key valid and model available.",
+        }
+
+    except Exception:
+        return {
+            "model": model_name,
+            "is_free_tier": True,
+            "daily_limit": 0,
+            "status": "unknown",
+            "message": "Could not reach Groq API. Check your connection.",
+        }
 
 
 @app.post("/api/run", tags=["runs"])

@@ -1,5 +1,14 @@
-// app/lib/types.ts
-// TypeScript types mirroring the backend Pydantic models in backend/models/schemas.py
+// Types matching backend Pydantic schemas exactly
+
+export type RunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "published"
+  | "pending_review"
+  | "rejected";
+
+export type TriggeredBy = "manual" | "scheduled";
 
 export interface Citation {
   source_name: string;
@@ -17,13 +26,6 @@ export interface Section {
   claims: Claim[];
 }
 
-export type RunStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "published"
-  | "pending_review";
-
 export interface RunMetadata {
   run_id: string;
   topic: string;
@@ -35,6 +37,7 @@ export interface RunMetadata {
   total_steps: number;
   token_estimate: number | null;
   status: RunStatus;
+  triggered_by: TriggeredBy;
 }
 
 export interface Briefing {
@@ -43,7 +46,7 @@ export interface Briefing {
   unverified_flags: string[];
 }
 
-// Lightweight shape returned by GET /api/runs (no briefing_json blob)
+// Lightweight summary from GET /api/runs
 export interface RunSummary {
   run_id: string;
   topic: string;
@@ -51,12 +54,5 @@ export interface RunSummary {
   status: RunStatus;
   sources_used: number;
   sources_skipped_count: number;
+  triggered_by: TriggeredBy;
 }
-
-// Agent names as a tuple for iteration
-export const AGENT_NAMES = ["Coordinator", "Researcher", "Analyst", "Writer"] as const;
-export type AgentName = (typeof AGENT_NAMES)[number];
-
-// Per-agent status used in the sidebar
-export type AgentStatus = "idle" | "running" | "done" | "error";
-export type AgentStatusMap = Record<AgentName, AgentStatus>;

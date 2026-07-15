@@ -10,11 +10,11 @@ Usage
 -----
     from backend.config import settings
 
-    settings.openrouter_api_key   # str
-    settings.serper_api_key       # str
-    settings.model_name           # str
-    settings.max_sources          # int
-    settings.max_steps            # int
+    settings.groq_api_key     # str
+    settings.serper_api_key   # str
+    settings.model_name       # str
+    settings.max_sources      # int
+    settings.max_steps        # int
 
 The module-level `settings` singleton is built on first import.  All other
 modules should import from here rather than calling os.getenv directly, so
@@ -34,21 +34,22 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 
 _PROJECT_ROOT = Path(__file__).parent.parent  # competitive-intel-crew/
-load_dotenv(_PROJECT_ROOT / ".env", override=False)
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # ---------------------------------------------------------------------------
 # Required vs optional keys
 # ---------------------------------------------------------------------------
 
 _REQUIRED_KEYS = (
-    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
     "SERPER_API_KEY",
 )
 
 _OPTIONAL_DEFAULTS = {
-    "MODEL_NAME": "openrouter/anthropic/claude-3.5-sonnet",
+    "MODEL_NAME": "groq/llama-3.3-70b-versatile",
     "MAX_SOURCES": "15",
     "MAX_STEPS": "10",
+    "MAX_TOKENS": "1500",
 }
 
 
@@ -72,22 +73,24 @@ def _validate() -> None:
 class Settings:
     """Typed, immutable snapshot of the current environment configuration."""
 
-    openrouter_api_key: str
+    groq_api_key: str
     serper_api_key: str
     model_name: str
     max_sources: int
     max_steps: int
+    max_tokens: int
 
 
 def _load_settings() -> Settings:
     """Validate env vars and return a populated Settings instance."""
     _validate()
     return Settings(
-        openrouter_api_key=os.environ["OPENROUTER_API_KEY"],
+        groq_api_key=os.environ["GROQ_API_KEY"],
         serper_api_key=os.environ["SERPER_API_KEY"],
         model_name=os.getenv("MODEL_NAME", _OPTIONAL_DEFAULTS["MODEL_NAME"]),
         max_sources=int(os.getenv("MAX_SOURCES", _OPTIONAL_DEFAULTS["MAX_SOURCES"])),
         max_steps=int(os.getenv("MAX_STEPS", _OPTIONAL_DEFAULTS["MAX_STEPS"])),
+        max_tokens=int(os.getenv("MAX_TOKENS", _OPTIONAL_DEFAULTS["MAX_TOKENS"])),
     )
 
 
