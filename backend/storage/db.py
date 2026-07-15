@@ -26,24 +26,36 @@ created automatically the first time any other module imports this one.
 Migration safety: `triggered_by` is added via ALTER TABLE IF NOT EXISTS
 (guarded by a try/except) so existing databases are upgraded in-place
 without data loss.
+
+DB location
+-----------
+Set DB_DIR env var to control where runs.db is written. On Render/Railway,
+point this at a mounted persistent volume (e.g. DB_DIR=/data) so the
+database survives restarts and redeploys — the default (next to this file)
+lives on ephemeral disk and will be wiped on every redeploy otherwise.
 """
 
 from __future__ import annotations
 
 import json
+import os  # <-- Moved to the absolute top of standard imports
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from backend.models.schemas import Briefing
+# Safe import to prevent circular dependency loops
+if TYPE_CHECKING:
+    from backend.models.schemas import Briefing
 
 # ---------------------------------------------------------------------------
 # Database path
 # ---------------------------------------------------------------------------
 
+# os is now fully defined when this line runs!
 _DB_DIR = Path(os.environ.get("DB_DIR", Path(__file__).parent))
-_DB_PATH = Path(_DB_DIR) / "runs.db"
+_DB_DIR.mkdir(parents=True, exist_ok=True)
+_DB_PATH = _DB_DIR / "runs.db"
 
 # ---------------------------------------------------------------------------
 # Internal helpers
