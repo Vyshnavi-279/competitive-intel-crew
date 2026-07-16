@@ -105,6 +105,11 @@ class SafeSearchTool(BaseTool):
                 title   = item.get("title", "")
                 link    = item.get("link", "")
                 snippet = item.get("snippet", "")
+                # Truncate snippet to 250 chars to keep Researcher context
+                # well under Groq's 6000 TPM limit (fix for RateLimitError).
+                # Shape of each result entry is unchanged — just shorter text.
+                if len(snippet) > 250:
+                    snippet = snippet[:250] + "..."
                 results.append(f"- {title}\n  {link}\n  {snippet}")
 
             self.search_count += 1

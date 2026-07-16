@@ -326,8 +326,8 @@ planning_task = Task(
 research_task = Task(
     description=(
         f"Search for information on {{topic}} using the SafeSearch tool.\n\n"
-        f"HARD RULE: Run EXACTLY {settings.max_sources} searches, then STOP. "
-        f"Do NOT run more than {settings.max_sources} searches under any circumstances.\n"
+        f"HARD RULE: Run EXACTLY 8 searches, then STOP. "
+        f"Do NOT run more than 8 searches under any circumstances.\n"
         f"When the tool says 'SEARCH LIMIT REACHED', stop immediately and report findings.\n\n"
         "For each search, pick ONE focused query. Suggested queries:\n"
         "  1. {topic} pricing changes 2025 2026\n"
@@ -337,7 +337,7 @@ research_task = Task(
         "Cite inline with [Source Name](url)."
     ),
     expected_output=(
-        f"Exactly {settings.max_sources} searches performed, then a concise list of "
+        "Exactly 8 searches performed, then a concise list of "
         "bullet-point findings each with an inline citation [Source Name](url)."
     ),
     agent=researcher,
