@@ -21,13 +21,6 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
   const [briefing, setBriefing] = useState<Briefing | null>(initialBriefing ?? null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
-  // mounted prevents timeAgo (calls Date.now()) from running during SSR,
-  // which would produce a different string than the first client render.
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const fetchRun = useCallback(async () => {
     try {
@@ -48,15 +41,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
       setLogs(newLogs);
       return data.metadata.status;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Error fetching run";
-      // 404 means the run record hasn't been saved to the DB yet (the backend
-      // saves it only after the crew finishes, which takes 2–5 minutes).
-      // Treat it as a transient condition: keep polling silently rather than
-      // showing an error banner that would alarm the user during a normal run.
-      if (msg.includes("404")) {
-        return "running";  // pretend still running, keep polling
-      }
-      setError(msg);
+      setError(e instanceof Error ? e.message : "Error fetching run");
       return "failed";
     }
   }, [runId]);
@@ -126,8 +111,7 @@ export function RunMonitor({ runId, initialBriefing }: RunMonitorProps) {
               {m.topic}
             </h2>
             <p className="text-xs mt-1" style={{ color: "#2E2A22" }}>
-              {/* timeAgo calls Date.now() — suppress until mounted to avoid hydration mismatch */}
-              Started {mounted ? timeAgo(m.started_at) : "—"}
+              Started {timeAgo(m.started_at)}
               {m.duration_seconds != null && ` · ${formatDuration(m.duration_seconds)}`}
             </p>
           </div>

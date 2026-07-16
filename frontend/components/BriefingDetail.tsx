@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Calendar, MousePointer, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 import type { Briefing, Section, Claim } from "@/lib/types";
@@ -73,14 +73,6 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  // mounted prevents timeAgo (calls Date.now()) from running during SSR,
-  // which produces a different string than the first client render and
-  // triggers React hydration error #418.
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const m = briefing.metadata;
   const isPendingReview = m.status === "pending_review";
@@ -180,8 +172,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
 
           {/* Timestamp */}
           <span className="text-xs" style={{ color: "#2E2A22" }}>
-            {/* timeAgo calls Date.now() — suppress until mounted to avoid hydration mismatch */}
-            {mounted ? timeAgo(m.started_at) : "—"}
+            {timeAgo(m.started_at)}
             {m.duration_seconds != null && ` · ${formatDuration(m.duration_seconds)}`}
           </span>
 

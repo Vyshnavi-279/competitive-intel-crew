@@ -112,11 +112,9 @@ function StatusIcon({ status, size = 18 }: { status: StageStatus; size?: number 
 function StageNode({
   entry,
   isLast,
-  mounted,
 }: {
   entry: StageEntry;
   isLast: boolean;
-  mounted: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const isRunning = entry.status === "running";
@@ -196,18 +194,16 @@ function StageNode({
             </p>
             <div className="flex flex-col gap-0.5">
               <p className="text-[10px] font-tabular" style={{ color: "#6B6358" }}>
-                {/* Suppress locale-sensitive formatting until after hydration */}
-                Started: {mounted ? fmtTime(entry.started_at) : "—"}
+                Started: {fmtTime(entry.started_at)}
               </p>
               {entry.status === "done" || entry.status === "failed" ? (
                 <p className="text-[10px] font-tabular" style={{ color: "#6B6358" }}>
-                  Ended: {mounted ? fmtTime(entry.completed_at) : "—"}
+                  Ended: {fmtTime(entry.completed_at)}
                 </p>
               ) : null}
               {entry.started_at && (
                 <p className="text-[10px] font-tabular" style={{ color: "#6B6358" }}>
-                  {/* elapsed calls new Date() for in-progress stages — client-only */}
-                  Duration: {mounted ? (elapsed(entry.started_at, entry.completed_at) ?? "—") : "—"}
+                  Duration: {elapsed(entry.started_at, entry.completed_at) ?? "—"}
                 </p>
               )}
             </div>
@@ -241,9 +237,6 @@ function StageNode({
 export function StageFlow({ runId, runStatus }: StageFlowProps) {
   const [stages, setStages] = useState<StageEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  // mounted prevents locale-sensitive timestamp formatting (fmtTime, elapsed)
-  // from running during SSR, where the server locale differs from the browser.
-  const [mounted, setMounted] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isTerminal = TERMINAL_STATUSES.includes(runStatus);
 
@@ -279,7 +272,6 @@ export function StageFlow({ runId, runStatus }: StageFlowProps) {
   }
 
   useEffect(() => {
-    setMounted(true);
     fetchStages();
 
     if (!isTerminal) {
@@ -359,7 +351,6 @@ export function StageFlow({ runId, runStatus }: StageFlowProps) {
               key={stage.stage_name}
               entry={stage}
               isLast={i === displayStages.length - 1}
-              mounted={mounted}
             />
           ))}
         </div>
