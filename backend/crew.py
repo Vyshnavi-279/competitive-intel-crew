@@ -171,9 +171,8 @@ llm = LLM(
     max_tokens=settings.max_tokens,
 )
 
-# For the researcher we prefer a lighter/faster model when on Groq (8b-instant
-# handles tool calls reliably and saves RPM budget).  On any other provider we
-# reuse the same model as the main LLM — no hardcoded provider assumption.
+# For the researcher we use llama-3.1-8b-instant on Groq (handles JSON tool
+# calls reliably). If the main model is already 8b-instant, reuse it directly.
 _researcher_model = (
     "groq/llama-3.1-8b-instant"
     if settings.provider == "groq"
@@ -181,8 +180,8 @@ _researcher_model = (
 )
 _researcher_llm = LLM(
     model=_researcher_model,
-    api_key=settings.llm_api_key,       # correct key for whatever provider is configured
-    max_tokens=400,   # researcher only needs short tool calls + a summary
+    api_key=settings.llm_api_key,
+    max_tokens=300,   # researcher only needs short tool calls + a brief summary
 )
 
 # ---------------------------------------------------------------------------
@@ -195,14 +194,13 @@ _search_tool = SafeSearchTool()
 # Per-agent iteration budgets
 # ---------------------------------------------------------------------------
 # Per-agent iteration budgets — kept tight to minimise LLM calls on the
-# Groq free tier (30 RPM).  Fewer iterations = fewer 429s = faster runs.
-_RESEARCHER_MAX_ITER = 3   # tool user — 2-3 search loops is enough
-_WRITER_MAX_ITER = 2       # no tools; one LLM call produces the output
-_DEFAULT_MAX_ITER = 2      # coordinator, analyst, fact-checker — pure text
+# Groq free tier (30 RPM / 6000 TPM per minute).
+_RESEARCHER_MAX_ITER = 2   # 1 search + 1 summary is enough
+_WRITER_MAX_ITER = 1       # one shot — no tools needed
+_DEFAULT_MAX_ITER = 1      # coordinator, analyst, fact-checker — single pass
 
-# FIX 1: Agent-level max_rpm=25 — keeps each agent just under the 30 RPM
-# free-tier cap for llama-3.3-70b-versatile.
-_AGENT_MAX_RPM = 25
+# Agent-level RPM cap — 5 agents sharing 30 RPM = 6 each, use 5 to be safe
+_AGENT_MAX_RPM = 5
 
 # ---------------------------------------------------------------------------
 # Agents
@@ -210,100 +208,59 @@ _AGENT_MAX_RPM = 25
 
 coordinator = Agent(
     role="Coordinator",
-    goal=(
-        "Plan the competitive-intelligence briefing and ensure every "
-        "section is produced in the correct order."
-    ),
-    backstory=(
-        "You are a senior project manager who coordinates research and "
-        "writing.  You never write content yourself, but you produce a "
-        "clear plan that the Researcher, Analyst, Fact-Checker, and Writer "
-        "agents follow."
-    ),
+    goal="Plan the competitive-intelligence briefing sections.",
+    backstory="Senior project manager. Never write content — only produce a concise plan.",
     allow_delegation=False,
-    verbose=True,
+    verbose=False,
     llm=llm,
     max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+    max_rpm=_AGENT_MAX_RPM,
 )
 
 researcher = Agent(
     role="Researcher",
-    goal=(
-        f"Run EXACTLY {settings.max_sources} web searches on the given topic, "
-        f"then STOP and report findings. Never run more than {settings.max_sources} searches."
-    ),
-    backstory=(
-        "You are a focused web researcher. You run a small number of targeted "
-        "searches, then immediately compile and report your findings with inline "
-        "citations. You never keep searching after your limit is reached."
-    ),
+    goal=f"Run up to {settings.max_sources} web searches on the topic, then stop and report findings with inline citations.",
+    backstory="Focused web researcher. Run targeted searches, compile findings with citations, then stop.",
     tools=[_search_tool],
     allow_delegation=False,
-    verbose=True,
-    llm=_researcher_llm,   # 8b-instant: reliable JSON tool calls on Groq
+    verbose=False,
+    llm=_researcher_llm,
     max_iter=_RESEARCHER_MAX_ITER,
-    max_retry_limit=2,     # retry up to 2× on malformed tool-call generations
+    max_retry_limit=1,
     max_rpm=_AGENT_MAX_RPM,
 )
 
 analyst = Agent(
     role="Analyst",
-    goal=(
-        "Compare and extract signal from the Researcher's raw findings. "
-        "Produce well‑reasoned claims with proper citations, distinguishing "
-        "verified facts from single‑source rumors."
-    ),
-    backstory=(
-        "You are a sharp financial and market analyst who reads through "
-        "raw research and distills it into clear, citable claims.  You "
-        "flag uncertainty and avoid over‑stating weak evidence."
-    ),
+    goal="Extract and classify claims from research. Distinguish verified facts from single-source rumors.",
+    backstory="Sharp market analyst. Read raw research, produce citable claims, flag uncertainty.",
     allow_delegation=False,
-    verbose=True,
+    verbose=False,
     llm=llm,
     max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+    max_rpm=_AGENT_MAX_RPM,
 )
 
-# FIX 2: Add Fact-Checker agent (FR-10 in spec.md; required by eval scenario 1)
 fact_checker = Agent(
     role="Fact-Checker",
-    goal=(
-        "Cross-check every claim in the Analyst's output against the raw "
-        "research provided by the Researcher.  Flag or remove any claim "
-        "that cannot be traced back to at least one cited source."
-    ),
-    backstory=(
-        "You are a meticulous fact-checker who validates that every "
-        "assertion is supported by evidence in the research corpus.  "
-        "You do not add new information — you only verify and flag."
-    ),
+    goal="Cross-check every Analyst claim against raw research. Flag uncited claims as [UNVERIFIED].",
+    backstory="Meticulous fact-checker. Only verify — do not add new information.",
     allow_delegation=False,
-    verbose=True,
+    verbose=False,
     llm=llm,
     max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+    max_rpm=_AGENT_MAX_RPM,
 )
 
 writer = Agent(
     role="Writer",
-    goal=(
-        "Produce the final structured briefing with three clearly headed "
-        "sections: Executive Summary (with a recommendation), Competitor "
-        "Pricing & Product Moves, and Market Signals.  Every claim must "
-        "carry inline citation markers like [Source Name](url)."
-    ),
-    backstory=(
-        "You are a seasoned business writer who specialises in concise, "
-        "well‑structured competitive intelligence reports.  You never "
-        "make a factual claim without attaching a citation marker."
-    ),
+    goal="Write the final briefing with exactly 3 sections. Every bullet must end with [Source](url).",
+    backstory="Business writer specialising in concise competitive intelligence reports.",
     allow_delegation=False,
-    verbose=True,
+    verbose=False,
     llm=llm,
     max_iter=_WRITER_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,  # FIX 1
+    max_rpm=_AGENT_MAX_RPM,
 )
 
 # ---------------------------------------------------------------------------
@@ -312,108 +269,57 @@ writer = Agent(
 
 planning_task = Task(
     description=(
-        "Plan a competitive-intelligence briefing on the topic: {topic}.\n\n"
-        "Output a list of sections that must be produced.  Do NOT write "
-        "content — just a bullet‑point outline of what each section should "
-        "contain.  The final briefing will have exactly three sections:\n"
-        "  1. Executive Summary\n"
-        "  2. Competitor Pricing & Product Moves\n"
-        "  3. Market Signals"
+        "Plan a competitive-intelligence briefing on: {topic}\n"
+        "Output a brief bullet-point outline for exactly 3 sections:\n"
+        "1. Executive Summary  2. Competitor Pricing & Product Moves  3. Market Signals"
     ),
-    expected_output=(
-        "A bullet‑point plan outlining the content needed for each of the "
-        "three sections."
-    ),
+    expected_output="A short bullet-point outline for the 3 sections.",
     agent=coordinator,
 )
 
 research_task = Task(
     description=(
-        f"Search for information on {{topic}} using the SafeSearch tool.\n\n"
-        f"HARD RULE: Run EXACTLY 5 searches, then STOP. "
-        f"Do NOT run more than 5 searches under any circumstances.\n"
-        f"When the tool says 'SEARCH LIMIT REACHED', stop immediately and report findings.\n\n"
-        "For each search, pick ONE focused query. Suggested queries:\n"
-        "  1. {topic} pricing changes 2025 2026\n"
-        "  2. {topic} product launches competitors\n"
-        "  3. {topic} market trends funding\n\n"
-        "After your searches, write bullet points of what you found. "
-        "Cite inline with [Source Name](url)."
+        f"Search for {{topic}} using the search tool. Run at most {settings.max_sources} searches then stop.\n"
+        "Report findings as bullet points with inline citations [Source](url)."
     ),
-    expected_output=(
-        "Exactly 5 searches performed, then a concise list of "
-        "bullet-point findings each with an inline citation [Source Name](url)."
-    ),
+    expected_output="Bullet-point findings with inline citations [Source Name](url).",
     agent=researcher,
     context=[planning_task],
 )
 
 analyze_task = Task(
     description=(
-        "Review the raw research provided by the Researcher.  For each "
-        "finding:\n"
-        "  - If it is well‑sourced (multiple citations or a major outlet), "
-        "keep it as a verified claim.\n"
-        "  - If it is a single‑source rumor, note the uncertainty.\n\n"
-        "Organise findings into three groups matching the briefing sections."
+        "Organise the research findings into 3 groups matching the briefing sections.\n"
+        "Keep well-sourced claims as verified. Mark single-source items as uncertain.\n"
+        "Each claim must have an inline citation [Source](url)."
     ),
-    expected_output=(
-        "Organised claims grouped by section, each with inline citation "
-        "markers and a note on confidence level."
-    ),
+    expected_output="Claims grouped by section with citations and confidence notes.",
     agent=analyst,
-    context=[planning_task, research_task],
+    context=[research_task],
 )
 
-# FIX 2: Fact-checker task — cross-checks Analyst output against raw research
 fact_check_task = Task(
     description=(
-        "Review the Analyst's organised claims and verify each one against "
-        "the Researcher's raw findings.\n\n"
-        "For each claim:\n"
-        "  - Confirm the cited source actually appears in the research.\n"
-        "  - If a claim has no supporting source in the research, "
-        "mark it as '[UNVERIFIED]' at the start.\n"
-        "  - If a claim is directly supported by research, keep it as-is.\n\n"
-        "Output the same three-section structure as the Analyst, "
-        "but with '[UNVERIFIED]' prefixes where needed."
+        "Check each Analyst claim against the research. "
+        "If a claim has no supporting source in the research, prefix it '[UNVERIFIED]'.\n"
+        "Output the same 3-section structure with [UNVERIFIED] prefixes where needed."
     ),
-    expected_output=(
-        "The Analyst's three-section claim list, with '[UNVERIFIED]' prefixed "
-        "on any claim that could not be traced back to the research corpus."
-    ),
+    expected_output="Three-section claim list with [UNVERIFIED] on unsupported claims.",
     agent=fact_checker,
     context=[research_task, analyze_task],
 )
 
 write_task = Task(
     description=(
-        "Using the Fact-Checker's verified findings, write the final briefing NOW.\n"
-        "Do not search for more information. Do not ask questions. Just write.\n\n"
-        "Output ONLY the briefing markdown using these EXACT headings:\n\n"
-        "## Executive Summary\n"
-        "## Competitor Pricing & Product Moves\n"
-        "## Market Signals\n\n"
-        "Rules:\n"
-        "1. Use EXACTLY those three ## headings, nothing else as a top-level heading.\n"
-        "2. Under each heading, write 3-5 bullet points starting with '- '.\n"
-        "3. CRITICAL — Every bullet point MUST end with at least one citation in\n"
-        "   EXACTLY this format: [Source Name](https://full-url-here)\n"
-        "   Example: - Notion raised prices 20% in March 2026. [TechCrunch](https://techcrunch.com/2026/notion)\n"
-        "   Do NOT use (parentheses), footnotes, or any other citation style.\n"
-        "   The ONLY accepted format is [Name](url) at the end of the bullet.\n"
-        "4. The Executive Summary must end with a '- **Recommendation:**' bullet\n"
-        "   that also ends with a [Source](url) citation.\n"
-        "5. Keep each bullet to 1-2 sentences. No preamble or closing remarks.\n"
-        "6. Do NOT include claims marked '[UNVERIFIED]' — skip them entirely.\n"
-        "7. If you do not have a URL, use the source name only: [Source Name]()\n"
-        "   but always include the [brackets](parens) structure on every bullet.\n\n"
+        "Write the final briefing using ONLY the verified findings. Output markdown with EXACTLY these headings:\n\n"
+        "## Executive Summary\n## Competitor Pricing & Product Moves\n## Market Signals\n\n"
+        "Rules: 3-5 bullet points per section. Every bullet MUST end with [Source](url).\n"
+        "Executive Summary must include a '- **Recommendation:**' bullet.\n"
+        "Skip any [UNVERIFIED] claims. No preamble or closing remarks.\n\n"
         "Topic: {topic}"
     ),
     expected_output=(
-        "A complete briefing with exactly three ## sections, each containing "
-        "3-5 bullet points, EVERY bullet ending with [Source Name](url). "
-        "Nothing else — no intro text, no closing remarks, no tables."
+        "Markdown briefing with 3 ## sections, each 3-5 bullets ending with [Source](url)."
     ),
     agent=writer,
     context=[fact_check_task],
@@ -430,7 +336,7 @@ crew = Crew(
     tasks=[planning_task, research_task, analyze_task, fact_check_task, write_task],
     process=Process.sequential,
     verbose=True,
-    max_rpm=20,  # FIX 1: crew-level rate limit (Groq free tier: 30 RPM)
+    max_rpm=5,   # crew-level ceiling — 5 agents × 5 RPM each = 25 RPM total, under 30 RPM free tier
     max_execution_time=MAX_EXECUTION_SECONDS,
 )
 
@@ -612,11 +518,10 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     _stage_end(r_id, s_name, "done")
                 except Exception:
                     pass
-                # Pause after Researcher, Analyst, and Fact-Checker to spread
-                # token usage across time and avoid Groq TPM rate-limit bursts
-                # when the next agent receives the full accumulated context.
+                # Brief pause after heavy agents to let the Groq TPM window
+                # breathe before the next agent fires.
                 if s_name in ("Researcher", "Analyst", "Fact-Checker"):
-                    time.sleep(15)
+                    time.sleep(5)
             return _cb
 
         try:
@@ -648,9 +553,19 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     or "RateLimitError" in exc_str
                 )
                 if is_rate_limit and _attempt < _MAX_RETRIES:
-                    # Use a fixed 20s wait — short enough to not feel frozen,
-                    # long enough for the Groq RPM window to reset.
-                    _retry_after = 20
+                    # Extract the actual retry-after from the error message
+                    _ra = re.search(
+                        r"(?:try again in|retry.?after)[^\d]*(\d+(?:\.\d+)?)\s*([smh]?)",
+                        exc_str, re.IGNORECASE
+                    )
+                    if _ra:
+                        _secs = float(_ra.group(1))
+                        _unit = (_ra.group(2) or "s").lower()
+                        if _unit == "m": _secs *= 60
+                        elif _unit == "h": _secs *= 3600
+                        _retry_after = min(int(_secs) + 2, 65)  # cap at 65s
+                    else:
+                        _retry_after = 30
                     _attempt += 1
                     logger.warning(
                         "Rate-limited (429) on attempt %d/%d — waiting %ds before retry.",
