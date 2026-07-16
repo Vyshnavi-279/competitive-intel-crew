@@ -42,7 +42,7 @@ export function AuthPilotWrapper({ children }: AuthPilotWrapperProps) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
 
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000");
 
     fetch(`${API_BASE}/api/config`, { signal: controller.signal })
       .then((r) => r.json())
