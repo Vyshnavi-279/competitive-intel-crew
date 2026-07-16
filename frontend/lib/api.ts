@@ -1,6 +1,12 @@
 import type { Briefing, KpiData, RunSummary } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "https://competitive-intel-crew-2.onrender.com";
+// In production (Render) NEXT_PUBLIC_API_URL is injected at build time.
+// In local dev it is not set, so fall back to the local backend.
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (typeof window !== "undefined" && window.location.hostname !== "localhost"
+    ? "https://competitive-intel-crew-2.onrender.com"
+    : "http://localhost:8000");
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

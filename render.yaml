@@ -7,17 +7,17 @@ services:
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GROQ_API_KEY
-        sync: false          # fill in on Render dashboard
+        sync: false          # set this in the Render dashboard — never commit real keys
       - key: SERPER_API_KEY
-        sync: false
+        sync: false          # set this in the Render dashboard
       - key: MODEL_NAME
-        value: groq/llama-3.3-70b-versatile
+        value: groq/llama-3.3-70b-versatile   # locked here — do NOT set this in the dashboard
       - key: MAX_TOKENS
-        value: "600"
+        value: "1000"
       - key: MAX_SOURCES
         value: "3"
       - key: MAX_STEPS
-        value: "6"
+        value: "10"
       - key: PYTHON_VERSION
         value: "3.11.0"
     disk:

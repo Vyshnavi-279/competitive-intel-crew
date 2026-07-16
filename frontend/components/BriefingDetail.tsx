@@ -214,17 +214,8 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
                 {failureMessage}
               </p>
               <p className="text-xs mt-3" style={{ color: "#2E2A22" }}>
-                Try starting a new briefing. If the problem persists, check your
-                Groq API key and rate-limit quota at{" "}
-                <a
-                  href="https://console.groq.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                  style={{ color: "#93B6C4" }}
-                >
-                  console.groq.com
-                </a>.
+                Try starting a new briefing. If the problem persists, verify
+                your API key and quota in your <code>.env</code> file.
               </p>
             </div>
           </div>

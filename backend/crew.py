@@ -167,18 +167,21 @@ if "anthropic" not in settings.model_name.lower():
 
 llm = LLM(
     model=settings.model_name,          # text-only agents (coordinator, analyst, etc.)
-    api_key=settings.groq_api_key,
+    api_key=settings.llm_api_key,       # correct key for whatever provider is configured
     max_tokens=settings.max_tokens,
 )
 
-# llama-3.1-8b-instant is used exclusively for the Researcher because it
-# generates valid JSON tool calls reliably.  llama-3.3-70b-versatile produces
-# XML-format tool calls that Groq rejects with tool_use_failed.
-# Using 8b-instant only for the one agent that calls a tool keeps the
-# tool-call failure rate near zero while the smarter model handles reasoning.
+# For the researcher we prefer a lighter/faster model when on Groq (8b-instant
+# handles tool calls reliably and saves RPM budget).  On any other provider we
+# reuse the same model as the main LLM — no hardcoded provider assumption.
+_researcher_model = (
+    "groq/llama-3.1-8b-instant"
+    if settings.provider == "groq"
+    else settings.model_name
+)
 _researcher_llm = LLM(
-    model="groq/llama-3.1-8b-instant",
-    api_key=settings.groq_api_key,
+    model=_researcher_model,
+    api_key=settings.llm_api_key,       # correct key for whatever provider is configured
     max_tokens=400,   # researcher only needs short tool calls + a summary
 )
 
@@ -778,6 +781,25 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
 
         # ---- Map exception to a human-readable message -------------------
         exc_str = str(exc)
+        # Determine which provider is configured so error messages are accurate
+        _model = settings.model_name.lower()
+        if _model.startswith("gemini") or "google" in _model:
+            _provider = "gemini"
+        elif _model.startswith("groq"):
+            _provider = "groq"
+        elif _model.startswith("openrouter"):
+            _provider = "openrouter"
+        else:
+            _provider = "groq"  # default fallback
+
+        _provider_links = {
+            "gemini": "https://ai.dev/rate-limit",
+            "groq": "https://console.groq.com",
+            "openrouter": "https://openrouter.ai/settings",
+        }
+        _provider_link = _provider_links.get(_provider, "https://console.groq.com")
+        _provider_label = _provider.capitalize()
+
         is_rate_limit = (
             "429" in exc_str
             or "rate_limit" in exc_str.lower()
@@ -791,19 +813,22 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             )
             _wait = f"~{int(float(_ra_match.group(1)))}s" if _ra_match else "~60s"
             human_error = (
-                f"Groq rate limit reached (retry after {_wait}). "
-                "The free tier allows limited tokens per minute. "
-                "Wait a minute and try again, or upgrade at https://console.groq.com."
+                f"{_provider_label} rate limit reached (retry after {_wait}). "
+                "The free tier allows limited requests per minute. "
+                f"Wait a moment and try again, or check your quota at {_provider_link}."
             )
         elif "402" in exc_str:
-            human_error = "Groq billing issue. Check your account at https://console.groq.com."
+            human_error = f"{_provider_label} billing issue. Check your account at {_provider_link}."
         elif "404" in exc_str and ("model" in exc_str.lower() or "endpoints" in exc_str.lower()):
             human_error = (
-                "Model not found on Groq. "
-                "Check MODEL_NAME in .env — use groq/llama-3.1-8b-instant."
+                f"Model not found on {_provider_label}. "
+                f"Check MODEL_NAME in .env — current value: {settings.model_name}."
             )
         elif "401" in exc_str:
-            human_error = "Invalid Groq API key. Check GROQ_API_KEY in your .env file."
+            human_error = (
+                f"Invalid {_provider_label} API key. "
+                f"Check your API key in .env and verify it at {_provider_link}."
+            )
         elif "failed to call a function" in exc_str.lower() or "failed_generation" in exc_str.lower():
             human_error = (
                 "Model failed to generate a valid tool call. "
@@ -815,8 +840,8 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             # Re-map if it's still a rate-limit string
             if "RateLimitError" in human_error or "rate_limit" in human_error.lower():
                 human_error = (
-                    "Groq rate limit reached. "
-                    "Wait a minute and try again, or upgrade at https://console.groq.com."
+                    f"{_provider_label} rate limit reached. "
+                    f"Wait a moment and try again, or check your quota at {_provider_link}."
                 )
         else:
             # Include the first 300 chars of the raw exception so it surfaces
