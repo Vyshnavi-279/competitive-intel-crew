@@ -537,8 +537,20 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         result = None
         while True:
             try:
+                # Reset any stale executor state from a previous failed run.
+                # CrewAI reuses agent_executor if it exists (updating params
+                # instead of creating fresh), so _is_executing can stay True
+                # after a crash. Force-clear it before every attempt.
+                try:
+                    for _agent in crew.agents:
+                        _exc = getattr(_agent, "agent_executor", None)
+                        if _exc is not None:
+                            _exc._is_executing = False
+                            _exc._has_been_invoked = False
+                except Exception:
+                    pass
+
                 # PHASE 1: mark Coordinator as running before kickoff
-                # (CrewAI runs tasks sequentially, so Coordinator is first)
                 try:
                     _stage_start(run_id, "Coordinator",
                                  _stage_desc_map.get("Coordinator", ""))
