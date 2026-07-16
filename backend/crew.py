@@ -868,7 +868,9 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     f"Wait a moment and try again, or check your quota at {_console_url}."
                 )
         else:
-            human_error = "Run failed due to an unexpected error. Please try again."
+            # Include the first 300 chars of the raw exception so it surfaces
+            # in the UI — makes diagnosis possible without server log access.
+            human_error = f"Run failed: {exc_str[:300]}"
 
         return Briefing(
             metadata=metadata,
