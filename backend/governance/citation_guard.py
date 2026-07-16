@@ -100,28 +100,21 @@ def enforce_citations(
                         pass
             cleaned.append(Section(title=section.title, claims=surviving))
         elif dropped:
-            # All-uncited fallback: keep claims as unverified rather than
-            # leaving the section empty.  The reviewer sees the content with
-            # a clear warning and can reject if quality is insufficient.
-            fallback_claims = []
-            for claim in dropped:
-                snippet = claim.text[:60] + ("..." if len(claim.text) > 60 else "")
-                flag_msg = (
-                    f"[citation_guard] Kept uncited claim as unverified in "
-                    f"'{section.title}' (all claims lacked citations): '{snippet}'"
-                )
-                flags.append(flag_msg)
-                if _log_event is not None:
-                    try:
-                        _log_event(run_id, flag_msg)
-                    except Exception:
-                        pass
-                prefix = "Unverified: "
-                new_text = claim.text if claim.text.startswith(prefix) else prefix + claim.text
-                fallback_claims.append(
-                    Claim(text=new_text, citations=[], verified=False)
-                )
-            cleaned.append(Section(title=section.title, claims=fallback_claims))
+            # All claims are uncited — drop the entire section rather than
+            # surfacing unverified content to the user.  Log a single flag
+            # so the reviewer can see the section was empty.
+            flag_msg = (
+                f"[citation_guard] Dropped section '{section.title}' — "
+                f"all {len(dropped)} claim(s) lacked citations."
+            )
+            flags.append(flag_msg)
+            if _log_event is not None:
+                try:
+                    _log_event(run_id, flag_msg)
+                except Exception:
+                    pass
+            # Append an empty section so the briefing structure is preserved
+            cleaned.append(Section(title=section.title, claims=[]))
         else:
             # Section was already empty — keep it empty
             cleaned.append(Section(title=section.title, claims=[]))

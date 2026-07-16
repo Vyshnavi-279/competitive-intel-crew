@@ -64,6 +64,7 @@ from backend.storage.db import (
     delete_failed_runs,
     get_stage_log,          # PHASE 1 ADDITION
     get_usage_analytics,    # PHASE 4 ADDITION
+    finalize_run,           # OPTIMISTIC UI — background run finalisation
 )
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,7 @@ async def api_status() -> Dict[str, Any]:
 
 @app.post("/api/run", tags=["runs"])
 async def create_run(body: RunRequest) -> Dict[str, Any]:
-    """Kick off a new competitive-intelligence crew run.
+    """Kick off a new competitive-intelligence crew run (synchronous, blocks until done).
 
     1. Calls ``run_briefing(topic, triggered_by="manual")``.
     2. Persists the resulting Briefing via ``save_run``.
@@ -382,6 +383,86 @@ async def create_run(body: RunRequest) -> Dict[str, Any]:
         raise
     except Exception as exc:
         logger.exception("Unexpected error in create_run")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {exc}") from exc
+
+
+@app.post("/api/run/start", tags=["runs"])
+async def start_run_background(body: RunRequest) -> Dict[str, Any]:
+    """Start a briefing run in the background and return the run_id immediately.
+
+    Unlike POST /api/run (which blocks until the crew finishes), this endpoint:
+    1. Allocates a run_id and inserts a stub row with status="running".
+    2. Fires the crew as a background asyncio task.
+    3. Returns {"run_id": "...", "status": "running"} immediately (~100ms).
+
+    The frontend navigates to /runs/{run_id} right away and the existing
+    RunMonitor component polls GET /api/runs/{run_id} until the run completes.
+    """
+    import asyncio
+    from backend.models.schemas import Briefing as _Briefing, RunMetadata as _RunMeta
+    from datetime import datetime as _dt
+    from uuid import uuid4
+
+    try:
+        topic = body.topic.strip()
+        if not topic:
+            raise HTTPException(status_code=422, detail="topic must not be empty")
+
+        submitted_by = (body.submitted_by or "default_user").strip() or "default_user"
+
+        # Allocate a run_id and create a "running" stub in the DB immediately.
+        run_id = str(uuid4())
+        stub_metadata = _RunMeta(
+            run_id=run_id,
+            topic=topic,
+            started_at=_dt.utcnow(),
+            status="running",
+            triggered_by="manual",
+            submitted_by=submitted_by,
+        )
+        stub_briefing = _Briefing(metadata=stub_metadata, sections=[], unverified_flags=[])
+        save_run(stub_briefing)
+        log_event(run_id, "run started")
+
+        logger.info("Background run %s started for topic: %s", run_id, topic)
+
+        # Fire the full crew run in the background.
+        # run_briefing() always returns (never raises), so this is safe to fire
+        # and forget — the RunMonitor polls /api/runs/{run_id} for status.
+        async def _background_run(r_id: str, t: str, sb: str):
+            try:
+                briefing = await run_briefing(t, triggered_by="manual")
+                try:
+                    object.__setattr__(briefing.metadata, "submitted_by", sb)
+                except Exception:
+                    pass
+                # finalize_run saves under r_id (not briefing's internal UUID),
+                # so the frontend's polling URL remains valid.
+                finalize_run(r_id, briefing)
+                if briefing.metadata.status == "failed":
+                    log_event(r_id, "run failed")
+                else:
+                    log_event(r_id, "awaiting review")
+                logger.info(
+                    "Background run %s finished: status=%s",
+                    r_id, briefing.metadata.status,
+                )
+            except Exception as exc:
+                logger.exception("Background run %s crashed: %s", r_id, exc)
+                try:
+                    update_run_status(r_id, "failed")
+                    log_event(r_id, f"run failed: {str(exc)[:200]}")
+                except Exception:
+                    pass
+
+        asyncio.create_task(_background_run(run_id, topic, submitted_by))
+
+        return {"run_id": run_id, "status": "running", "topic": topic}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error in start_run_background")
         raise HTTPException(status_code=500, detail=f"Internal server error: {exc}") from exc
 
 

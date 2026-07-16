@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, ArrowRight } from "lucide-react";
-import { triggerRun } from "@/lib/api";
+import { startRun } from "@/lib/api";
 
 const STANDING_TOPICS = [
   "AI developer tools market 2026",
@@ -74,8 +74,10 @@ export default function NewBriefingPage() {
     setLoading(true);
     setError(null);
     try {
-      const briefing = await triggerRun(t);
-      router.push(`/runs/${briefing.metadata.run_id}`);
+      // startRun returns immediately with the run_id — no waiting for the crew.
+      // The RunMonitor on /runs/{id} will poll for live progress.
+      const { run_id } = await startRun(t);
+      router.push(`/runs/${run_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start run");
       setLoading(false);
@@ -140,7 +142,7 @@ export default function NewBriefingPage() {
               {loading ? (
                 <>
                   <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
-                  Starting run…
+                  Starting…
                 </>
               ) : (
                 <>
@@ -182,7 +184,7 @@ export default function NewBriefingPage() {
         <div>
           <p className="text-[14px] font-semibold" style={{ color: "#2E2A22" }}>5-agent AI pipeline</p>
           <p className="text-[13px] mt-0.5" style={{ color: "#2E2A22" }}>
-            Coordinator → Researcher → Analyst → Fact-Checker → Writer · Typical run: 2–5 min
+            Coordinator → Researcher → Analyst → Fact-Checker → Writer · You&apos;ll see live progress immediately
           </p>
         </div>
       </div>

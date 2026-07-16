@@ -20,9 +20,21 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** POST /api/run — trigger a new briefing run */
+/** POST /api/run — trigger a new briefing run (synchronous, waits for completion) */
 export async function triggerRun(topic: string): Promise<Briefing> {
   return apiFetch<Briefing>("/api/run", {
+    method: "POST",
+    body: JSON.stringify({ topic }),
+  });
+}
+
+/** POST /api/run/start — start a briefing run in the background.
+ *  Returns immediately (~100ms) with { run_id, status: "running" }.
+ *  Navigate to /runs/{run_id} right away; RunMonitor will poll for completion. */
+export async function startRun(
+  topic: string
+): Promise<{ run_id: string; status: string; topic: string }> {
+  return apiFetch<{ run_id: string; status: string; topic: string }>("/api/run/start", {
     method: "POST",
     body: JSON.stringify({ topic }),
   });

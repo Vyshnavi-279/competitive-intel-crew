@@ -331,6 +331,49 @@ def update_run_status(run_id: str, status: str) -> bool:
     return cursor.rowcount > 0
 
 
+def finalize_run(stub_run_id: str, briefing: "Briefing") -> None:  # type: ignore[name-defined]
+    """Replace the stub run row (inserted by start_run_background) with the
+    completed briefing data, keeping the pre-allocated *stub_run_id*.
+
+    The briefing's metadata.run_id may differ from *stub_run_id* because
+    run_briefing() always generates its own UUID.  This function rewrites the
+    briefing JSON to use *stub_run_id* before saving, so the frontend's
+    polling URL (/api/runs/{stub_run_id}) always resolves correctly.
+    """
+    import json as _json
+
+    data = briefing.to_dict()
+    # Patch the run_id inside the JSON blob to match the stub
+    if "metadata" in data:
+        data["metadata"]["run_id"] = stub_run_id
+    m = briefing.metadata
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO runs
+                (run_id, topic, started_at, duration_seconds,
+                 sources_attempted, sources_used, total_steps,
+                 status, triggered_by, submitted_by, briefing_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stub_run_id,           # use the pre-allocated ID, not briefing's own
+                m.topic,
+                m.started_at.isoformat(),
+                m.duration_seconds,
+                m.sources_attempted,
+                m.sources_used,
+                m.total_steps,
+                m.status,
+                m.triggered_by,
+                getattr(m, "submitted_by", None),
+                _json.dumps(data),
+            ),
+        )
+        conn.commit()
+
+
 def log_event(run_id: str, event_text: str) -> None:
     """Append an entry to the audit_log for *run_id*.
 

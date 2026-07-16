@@ -17,25 +17,13 @@ interface BriefingDetailProps {
 
 function ClaimRow({ claim }: { claim: Claim }) {
   const isUnverified = !claim.verified || claim.text.startsWith("Unverified:");
-  const text = claim.text.replace(/^Unverified:\s*/i, "");
 
-  if (isUnverified) {
-    return (
-      <div className="clay-unverified p-3 flex flex-col gap-2">
-        <p className="eyebrow" style={{ color: "#b5743a" }}>Unverified</p>
-        <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>{text}</p>
-        {claim.citations.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {claim.citations.map((c, i) => <CitationChip key={i} citation={c} />)}
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Never render unverified claims in the main briefing view
+  if (isUnverified) return null;
 
   return (
     <div className="flex flex-col gap-2 py-2.5 border-b border-[#EFE6D8] last:border-0">
-      <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>{text}</p>
+      <p className="text-sm leading-relaxed" style={{ color: "#2E2A22" }}>{claim.text}</p>
       {claim.citations.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {claim.citations.map((c, i) => <CitationChip key={i} citation={c} />)}
@@ -90,20 +78,45 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
 
   // Map a raw error flag to a friendly human-readable message.
   function humanizeError(flags: string[]): string {
-    const raw = flags[0] ?? "";
-    if (raw.includes("Rate limit") || raw.includes("RateLimitError") || raw.includes("429"))
-      return "Groq rate limit reached. The free tier has limited requests per minute. Wait 60 seconds and try again, or check console.groq.com for your quota.";
-    if (raw.includes("401") || raw.includes("Invalid API key"))
-      return "Invalid Groq API key. Check GROQ_API_KEY in your .env file.";
-    if (raw.includes("404") || raw.includes("model") && raw.includes("not found"))
+    const raw = (flags[0] ?? "").toLowerCase();
+
+    // Invalid / missing API key — catches "Invalid API Key", "invalid_api_key", 401
+    if (
+      raw.includes("invalid api key") ||
+      raw.includes("invalid_api_key") ||
+      raw.includes("401") ||
+      raw.includes("authentication")
+    )
+      return "Invalid Groq API key. Open your .env file and replace the placeholder: GROQ_API_KEY=your_groq_api_key_here  →  your real key from console.groq.com";
+
+    // Rate limit
+    if (raw.includes("rate limit") || raw.includes("ratelimiterror") || raw.includes("429"))
+      return "Groq rate limit reached. The free tier allows limited requests per minute. Wait 60 seconds and try again, or check your quota at console.groq.com.";
+
+    // Model not found
+    if ((raw.includes("404") || raw.includes("model")) && raw.includes("not found"))
       return "Model not found on Groq. Check MODEL_NAME in your .env file — use groq/llama-3.3-70b-versatile.";
-    if (raw.includes("Failed to call a function") || raw.includes("failed_generation"))
+
+    // Tool call failure
+    if (raw.includes("failed to call a function") || raw.includes("failed_generation"))
       return "The model failed to generate a valid tool call. Restart the backend and try again.";
+
+    // Billing
     if (raw.includes("402"))
       return "Groq billing issue. Check your account at console.groq.com.";
-    // If there's a clean (non-raw) human error stored, use it
+
+    // Missing API key (placeholder still set)
+    if (raw.includes("your_groq_api_key") || raw.includes("missing") && raw.includes("api"))
+      return "No Groq API key set. Open your .env file and add your key: GROQ_API_KEY=gsk_...";
+
+    // If there's a clean (non-raw) human error stored, surface it
     const clean = flags.find(f => !isRawError(f));
     if (clean) return clean;
+
+    // Last resort: show the first 200 chars of the raw error so the user has something to go on
+    const firstFlag = flags[0] ?? "";
+    const snippet = firstFlag.replace(/^Run failed:\s*/i, "").slice(0, 200);
+    if (snippet) return `Run error: ${snippet}`;
     return "The run encountered an unexpected error. Please try again.";
   }
 
