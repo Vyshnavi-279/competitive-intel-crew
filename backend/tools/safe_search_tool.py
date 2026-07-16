@@ -56,6 +56,8 @@ class SafeSearchTool(BaseTool):
     # Public counters — read by crew.py after the run
     search_count: int = 0
     skipped_sources: List[str] = []
+    # PHASE 2 ADDITION — count of searches served from the local cache
+    cache_hits: int = 0
 
     def _run(self, query: str, **kwargs) -> str:
         """Execute one web search, subject to the source cap. Never raises."""
@@ -73,6 +75,19 @@ class SafeSearchTool(BaseTool):
         if not api_key:
             self.skipped_sources.append(query)
             return f"[SafeSearch] No SERPER_API_KEY configured. Skipping: '{query}'"
+
+        # ---- PHASE 2: check cache before calling the external API ---------
+        # Wrapped in try/except so a cache failure always falls through to
+        # the real search — this must never block or break a run.
+        try:
+            from backend.storage.db import get_cached_search, save_cached_search
+            cached_result = get_cached_search(query)
+            if cached_result is not None:
+                # Cache hit — do NOT count against MAX_SOURCES (no real call)
+                self.cache_hits += 1
+                return cached_result
+        except Exception:
+            pass  # cache error → fall through to live search
 
         # ---- Live call ----------------------------------------------------
         try:
@@ -93,9 +108,16 @@ class SafeSearchTool(BaseTool):
                 results.append(f"- {title}\n  {link}\n  {snippet}")
 
             self.search_count += 1
-            if not results:
-                return f"[SafeSearch] No results for: '{query}'"
-            return "\n\n".join(results)
+            result_text = "\n\n".join(results) if results else f"[SafeSearch] No results for: '{query}'"
+
+            # PHASE 2: save to cache on success (silently, never blocks)
+            try:
+                from backend.storage.db import save_cached_search
+                save_cached_search(query, result_text, source_name="serper")
+            except Exception:
+                pass
+
+            return result_text
 
         except Exception as exc:
             self.skipped_sources.append(query)

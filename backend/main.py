@@ -62,6 +62,8 @@ from backend.storage.db import (
     update_run_status,
     delete_run,
     delete_failed_runs,
+    get_stage_log,          # PHASE 1 ADDITION
+    get_usage_analytics,    # PHASE 4 ADDITION
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,10 @@ app.add_middleware(
 class RunRequest(BaseModel):
     """Body for POST /api/run."""
     topic: str
+    # PHASE 4 ADDITION — who submitted this run.  Defaults to "default_user"
+    # so existing callers that don't send this field continue to work exactly
+    # as before.  No validation beyond being a non-empty string.
+    submitted_by: str = "default_user"
 
 
 class PublishResponse(BaseModel):
@@ -180,6 +186,26 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+# PHASE 5 ADDITION — config endpoint for the multi-tenant auth pilot.
+# Read-only; exposes only the flags the frontend needs.
+# NOTE: This is a pilot placeholder — not production auth/config management.
+@app.get("/api/config", tags=["meta"])
+async def get_config() -> Dict[str, Any]:
+    """Return frontend-safe configuration flags.
+
+    Currently exposes only one flag:
+        multi_tenant_enabled: bool — when True the frontend shows the
+        username-only login modal (PHASE 5 pilot).  Defaults to False so
+        all existing behaviour is unchanged until explicitly enabled via
+        the ENABLE_MULTI_TENANT_AUTH env var.
+
+    Read-only and side-effect free.
+    """
+    return {
+        "multi_tenant_enabled": settings.enable_multi_tenant_auth,
+    }
+
+
 @app.delete("/api/runs/failed", tags=["runs"])
 async def delete_all_failed() -> Dict[str, Any]:
     """Delete all runs with status='failed' in one shot."""
@@ -211,6 +237,31 @@ async def kpis() -> Dict[str, Any]:
     except Exception as exc:
         logger.exception("Failed to compute KPIs")
         raise HTTPException(status_code=500, detail=f"KPI computation failed: {exc}") from exc
+
+
+# PHASE 4 ADDITION — per-analyst usage + turnaround analytics
+@app.get("/api/analytics/usage", tags=["analytics"])
+async def analytics_usage() -> Dict[str, Any]:
+    """Return per-analyst run counts, average durations, and a 30-day daily trend.
+
+    Response shape:
+        {
+          "by_user": [
+              {"submitted_by": str, "run_count": int, "avg_duration_seconds": float}
+          ],
+          "daily_trend": [
+              {"date": "YYYY-MM-DD", "run_count": int}
+          ]
+        }
+
+    Read-only and side-effect free.  Returns empty arrays if there are no
+    runs yet, never raises a 500.
+    """
+    try:
+        return get_usage_analytics()
+    except Exception as exc:
+        logger.exception("Failed to compute usage analytics")
+        raise HTTPException(status_code=500, detail=f"Analytics query failed: {exc}") from exc
 
 
 @app.get("/api/status", tags=["meta"])
@@ -301,6 +352,14 @@ async def create_run(body: RunRequest) -> Dict[str, Any]:
         briefing = await run_briefing(topic, triggered_by="manual")
         run_id = briefing.metadata.run_id
 
+        # PHASE 4: stamp who submitted this run onto the metadata so it's
+        # persisted in the DB and available for analytics.
+        try:
+            submitted_by = (body.submitted_by or "default_user").strip() or "default_user"
+            briefing.metadata.submitted_by = submitted_by
+        except Exception:
+            pass  # never break existing flow for new fields
+
         # Persist before logging (FK constraint in audit_log).
         save_run(briefing)
 
@@ -369,6 +428,80 @@ async def get_run_detail(run_id: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.exception("Failed to retrieve run %s", run_id)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve run: {exc}") from exc
+
+
+# PHASE 1 ADDITION — stage flow endpoint
+@app.get("/api/runs/{run_id}/stages", tags=["runs"])
+async def get_run_stages(run_id: str) -> List[Dict[str, Any]]:
+    """Return the ordered stage_log rows for a run.
+
+    Always returns all 5 canonical stages, merging:
+      1. In-memory registry (most up-to-date for a currently-running run)
+      2. SQLite-persisted rows (available after a server restart)
+      3. Static _STAGE_DEFS defaults (fills in any missing stages / descriptions)
+
+    For completed/published/pending_review runs, any stage that is still
+    "pending" is upgraded to "done" — this covers old runs where only
+    the Coordinator's DB row was written (the other 4 used only in-memory
+    tracking that didn't survive a server restart).
+
+    Read-only and side-effect free.
+    """
+    from backend.crew import _stage_registry, _STAGE_DEFS  # lazy import avoids circular dep
+
+    _TERMINAL_STATUSES = {"completed", "pending_review", "published", "rejected"}
+
+    _STAGE_DEFAULTS: List[Dict[str, Any]] = [
+        {
+            "stage_name":   name,
+            "status":       "pending",
+            "description":  desc,
+            "started_at":   None,
+            "completed_at": None,
+        }
+        for name, desc in _STAGE_DEFS
+    ]
+    _desc_map = dict(_STAGE_DEFS)
+
+    try:
+        # Build a merged map: start from static defaults, overlay with live data
+        merged: dict[str, dict] = {d["stage_name"]: dict(d) for d in _STAGE_DEFAULTS}
+
+        # Layer 1: DB-persisted rows
+        db_rows = get_stage_log(run_id)
+        for row in db_rows:
+            name = row.get("stage_name", "")
+            if name in merged:
+                merged[name].update({k: v for k, v in row.items() if v is not None})
+                # Always use the canonical static description — never an empty DB value
+                if not merged[name].get("description"):
+                    merged[name]["description"] = _desc_map.get(name, "")
+
+        # Layer 2: In-memory registry (live, overrides DB for running runs)
+        in_memory = _stage_registry.get(run_id, [])
+        for entry in in_memory:
+            name = entry.get("stage_name", "")
+            if name in merged:
+                merged[name].update({k: v for k, v in entry.items() if v is not None})
+                if not merged[name].get("description"):
+                    merged[name]["description"] = _desc_map.get(name, "")
+
+        # Layer 3: For terminal-status runs, promote "pending" stages → "done"
+        # This fixes old runs where only Coordinator wrote a DB row and the
+        # other 4 stages' in-memory data was lost on server restart.
+        run_data = get_run(run_id)
+        run_status = run_data.get("metadata", {}).get("status", "") if run_data else ""
+        if run_status in _TERMINAL_STATUSES and run_status != "failed":
+            for entry in merged.values():
+                if entry["status"] == "pending":
+                    entry["status"] = "done"
+
+        # Return in canonical order
+        return [merged[name] for name, _ in _STAGE_DEFS if name in merged]
+
+    except Exception as exc:
+        logger.warning("Failed to retrieve stages for run %s: %s", run_id, exc)
+        return _STAGE_DEFAULTS
 
 
 @app.post("/api/runs/{run_id}/publish", tags=["runs"])

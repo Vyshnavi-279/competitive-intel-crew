@@ -249,6 +249,7 @@ export function BriefingDetail({ briefing }: BriefingDetailProps) {
         sourcesSkipped={m.sources_skipped ?? []}
         droppedCount={droppedCount}
         unverifiedCount={unverifiedCount}
+        cacheHits={m.cache_hits ?? 0}
       />
 
       {/* Action bar — only in pending_review */}

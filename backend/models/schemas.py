@@ -71,6 +71,13 @@ class RunMetadata(BaseModel):
     # Populated after the governance layer runs; 100.0 means citation_guard
     # has enforced that every surviving claim is cited (FR-4).
     cited_claims_pct: Optional[float] = None
+    # PHASE 2 ADDITION — number of searches served from the local cache.
+    # Optional / defaults to 0 so existing runs without this field are safe.
+    cache_hits: int = 0
+    # PHASE 4 ADDITION — who submitted this run (analyst name or "default_user").
+    # Optional so old Briefing blobs in the DB that lack this field deserialise
+    # cleanly without error.
+    submitted_by: Optional[str] = "default_user"
 
 
 class Briefing(BaseModel):

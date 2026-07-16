@@ -71,21 +71,60 @@ def enforce_citations(
 
     for section in sections:
         surviving: List[Claim] = []
+        dropped: List[Claim] = []
+
         for claim in section.claims:
             if not claim.is_properly_sourced:
+                dropped.append(claim)
+            else:
+                surviving.append(claim)
+
+        # --- Safety-net for all-uncited sections ----------------------------
+        # If EVERY claim in this section lacks citations (common when the LLM
+        # produces good text but forgets [Source](url) markers), dropping them
+        # all would leave the section completely empty — which is worse than
+        # showing hedged content with a clear "unverified" label.
+        # In that case, keep the claims but mark them as unverified and prefix
+        # them so the reviewer knows they are uncited.
+        # We still log the flags so the governance log is accurate.
+        if surviving:
+            # Normal path: some claims have citations → drop the uncited ones
+            for claim in dropped:
                 snippet = claim.text[:60] + ("..." if len(claim.text) > 60 else "")
                 flag_msg = f"[citation_guard] Dropped uncited claim in '{section.title}': '{snippet}'"
                 flags.append(flag_msg)
-                # Write to audit_log so the reviewer can see what was removed.
                 if _log_event is not None:
                     try:
                         _log_event(run_id, flag_msg)
                     except Exception:
-                        pass  # never let logging failure break the pipeline
-                # Claim is NOT added to surviving — it is dropped (FR-4).
-            else:
-                surviving.append(claim)
-        cleaned.append(Section(title=section.title, claims=surviving))
+                        pass
+            cleaned.append(Section(title=section.title, claims=surviving))
+        elif dropped:
+            # All-uncited fallback: keep claims as unverified rather than
+            # leaving the section empty.  The reviewer sees the content with
+            # a clear warning and can reject if quality is insufficient.
+            fallback_claims = []
+            for claim in dropped:
+                snippet = claim.text[:60] + ("..." if len(claim.text) > 60 else "")
+                flag_msg = (
+                    f"[citation_guard] Kept uncited claim as unverified in "
+                    f"'{section.title}' (all claims lacked citations): '{snippet}'"
+                )
+                flags.append(flag_msg)
+                if _log_event is not None:
+                    try:
+                        _log_event(run_id, flag_msg)
+                    except Exception:
+                        pass
+                prefix = "Unverified: "
+                new_text = claim.text if claim.text.startswith(prefix) else prefix + claim.text
+                fallback_claims.append(
+                    Claim(text=new_text, citations=[], verified=False)
+                )
+            cleaned.append(Section(title=section.title, claims=fallback_claims))
+        else:
+            # Section was already empty — keep it empty
+            cleaned.append(Section(title=section.title, claims=[]))
 
     return cleaned, flags
 
@@ -117,13 +156,30 @@ def flag_unverified_assertions(
     in a small allowlist of known major outlets.  Such claims are prefixed
     with "Unverified: " and marked verified=False instead of being dropped.
 
+    PHASE 3 BROADENING — based on Scenario 5 (planted unverified claim) test
+    learnings.  Three improvements were made to catch adversarial phrasings:
+
+    1.  The suspicious_keywords default list now includes multi-word patterns
+        and low-credibility qualifiers in addition to single-word triggers.
+        Case-insensitive substring matching (already used) catches these
+        naturally since we iterate the full claim text.
+
+    2.  A set of compiled regex patterns catches adversarial phrasings that
+        wouldn't match any single keyword (e.g. "going under", "on the verge
+        of bankruptcy", "sources say", "unconfirmed reports").
+
+    3.  A numeric-risk heuristic: if a claim contains a specific number
+        (integer or percentage) together with a negative-outcome word
+        (lawsuit, loss, collapse, fraud, bankrupt, scandal, layoff, laid off)
+        AND is backed by only one non-authoritative source, it is hedged —
+        even if it contains none of the trigger keywords above.
+
     Parameters
     ----------
     sections:
         Section list after ``enforce_citations`` has already run.
     suspicious_keywords:
-        Extra keywords to watch for (defaults to bankrupt / lawsuit / fraud /
-        shutting down / insolvent).
+        Extra keywords to watch for (defaults to the broadened list below).
     run_id:
         If provided, each hedged claim is logged to the audit_log table.
 
@@ -134,15 +190,72 @@ def flag_unverified_assertions(
     flags : List[str]
         Human-readable notes describing what was hedged.
     """
+    import re  # local import — only needed here, avoids module-level dep
+
     _log_event = None
     if run_id is not None:
         from backend.storage.db import log_event as _log_event  # type: ignore[assignment]
 
+    # -----------------------------------------------------------------------
+    # PHASE 3: Broadened suspicious_keywords default.
+    # Original: bankrupt, lawsuit, fraud, shutting down, insolvent
+    # Added: multi-word adversarial phrases and low-credibility qualifiers.
+    # -----------------------------------------------------------------------
     if suspicious_keywords is None:
         suspicious_keywords = [
+            # Original keywords (preserved — existing behaviour unchanged)
             "bankrupt", "lawsuit", "fraud",
             "shutting down", "insolvent",
+            # PHASE 3 additions — adversarial phrasings
+            "going under",
+            "about to collapse",
+            "on the verge of bankruptcy",
+            "secretly",
+            "unconfirmed reports",
+            "rumored to be",
+            # NOTE: "sources say" is intentionally NOT in the flat list because
+            # it appears in legitimate journalism too.  We handle it via the
+            # regex patterns below instead, where we can combine it with
+            # other low-credibility signals.
         ]
+
+    # -----------------------------------------------------------------------
+    # PHASE 3: Compiled regex patterns for adversarial phrasings that need
+    # more context than a single keyword match can provide.
+    # All patterns are case-insensitive.
+    # -----------------------------------------------------------------------
+    _ADVERSARIAL_PATTERNS = [
+        re.compile(r"\bsources?\s+say\b", re.IGNORECASE),          # "sources say"
+        re.compile(r"\bunconfirmed\b", re.IGNORECASE),              # "unconfirmed ..."
+        re.compile(r"\brumou?red?\b", re.IGNORECASE),               # "rumored/rumoured"
+        re.compile(r"\bgoing\s+under\b", re.IGNORECASE),            # "going under"
+        re.compile(r"\bverge\s+of\s+(?:bankruptcy|collapse|insolvency)\b", re.IGNORECASE),
+        re.compile(r"\babout\s+to\s+(?:collapse|fail|fold|close)\b", re.IGNORECASE),
+        re.compile(r"\bsecretly\b", re.IGNORECASE),
+    ]
+
+    # -----------------------------------------------------------------------
+    # PHASE 3: Numeric-risk heuristic.
+    # A claim that contains a specific number (e.g. "40%" or "$5 million")
+    # together with a negative-outcome word is flagged even without trigger
+    # keywords — these are the classic pattern of planted unverified stats.
+    # -----------------------------------------------------------------------
+    _NUMBER_PATTERN = re.compile(
+        r"\b\d+(?:[,\.]\d+)?(?:\s*%|(?:\s+(?:million|billion|thousand|percent)))?\b",
+        re.IGNORECASE,
+    )
+    _NEGATIVE_OUTCOME_WORDS = {
+        "lawsuit", "loss", "losses", "collapse", "fraud", "bankrupt",
+        "bankruptcy", "scandal", "layoff", "laid off", "terminated",
+        "fired", "cut", "cuts", "plummeted", "crashed", "hack",
+    }
+
+    def _has_numeric_risk(text: str) -> bool:
+        """Return True if text has a number + a negative-outcome word."""
+        if not _NUMBER_PATTERN.search(text):
+            return False
+        text_lower = text.lower()
+        return any(word in text_lower for word in _NEGATIVE_OUTCOME_WORDS)
 
     flags: List[str] = []
     modified: List[Section] = []
@@ -150,15 +263,28 @@ def flag_unverified_assertions(
     for section in sections:
         updated_claims: List[Claim] = []
         for claim in section.claims:
-            # Only inspect claims that contain a suspicious keyword.
-            if not any(kw.lower() in claim.text.lower() for kw in suspicious_keywords):
+            text = claim.text
+
+            # ----------------------------------------------------------------
+            # Determine if this claim is suspicious:
+            #   a) contains a suspicious keyword (flat list, case-insensitive)
+            #   b) matches one of the adversarial regex patterns
+            #   c) numeric-risk heuristic fires
+            # ----------------------------------------------------------------
+            keyword_hit = any(kw.lower() in text.lower() for kw in suspicious_keywords)
+            pattern_hit = any(p.search(text) for p in _ADVERSARIAL_PATTERNS)
+            numeric_hit = _has_numeric_risk(text)
+
+            is_suspicious = keyword_hit or pattern_hit or numeric_hit
+
+            if not is_suspicious:
                 updated_claims.append(claim)
                 continue
 
             # Heuristic: if there is exactly one citation from an untrusted source …
             if len(claim.citations) == 1 and claim.citations[0].source_name not in _TRUSTED_OUTLETS:
                 prefix = "Unverified: "
-                new_text = claim.text if claim.text.startswith(prefix) else prefix + claim.text
+                new_text = text if text.startswith(prefix) else prefix + text
                 updated_claims.append(
                     Claim(
                         text=new_text,
@@ -166,10 +292,17 @@ def flag_unverified_assertions(
                         verified=False,
                     )
                 )
-                snippet = claim.text[:60] + ("..." if len(claim.text) > 60 else "")
+                snippet = text[:60] + ("..." if len(text) > 60 else "")
+                # Note which trigger fired so reviewers understand why
+                trigger_note = (
+                    "numeric-risk heuristic" if numeric_hit and not keyword_hit
+                    else "adversarial pattern" if pattern_hit and not keyword_hit
+                    else f"keyword: {next((kw for kw in suspicious_keywords if kw.lower() in text.lower()), '?')}"
+                )
                 flag_msg = (
                     f"[citation_guard] Hedged unverified claim in '{section.title}': "
-                    f"'{snippet}' — single source: {claim.citations[0].source_name}"
+                    f"'{snippet}' — single source: {claim.citations[0].source_name} "
+                    f"[trigger: {trigger_note}]"
                 )
                 flags.append(flag_msg)
                 if _log_event is not None:

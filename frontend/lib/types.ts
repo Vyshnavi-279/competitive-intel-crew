@@ -41,6 +41,8 @@ export interface RunMetadata {
   /** KPI: % of surviving claims that carry at least one citation (FR-4).
    *  Populated after governance runs; 100.0 = citation_guard enforced fully. */
   cited_claims_pct: number | null;
+  /** PHASE 2 ADDITION — searches served from the local cache this run. */
+  cache_hits?: number;
 }
 
 export interface Briefing {

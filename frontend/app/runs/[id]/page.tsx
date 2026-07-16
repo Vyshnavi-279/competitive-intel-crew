@@ -1,5 +1,6 @@
 import { RunMonitor } from "@/components/RunMonitor";
 import { BriefingDetail } from "@/components/BriefingDetail";
+import { StageFlow } from "@/components/StageFlow";
 import { getRun } from "@/lib/api";
 
 interface PageProps {
@@ -31,14 +32,25 @@ export default async function RunPage({ params }: PageProps) {
             {briefing?.metadata.topic ?? "Loading…"}
           </h1>
         </div>
+
+        {/* PHASE 1 ADDITION — StageFlow stepper, shown above the run monitor */}
+        <div className="mb-5">
+          <StageFlow runId={id} runStatus={briefing?.metadata.status ?? "running"} />
+        </div>
+
         <RunMonitor runId={id} initialBriefing={briefing} />
       </div>
     );
   }
 
-  // Otherwise show the full briefing detail
+  // Otherwise show the full briefing detail (terminal status)
   return (
     <div className="max-w-2xl mx-auto">
+      {/* PHASE 1 ADDITION — StageFlow stepper above the briefing detail */}
+      <div className="mb-5">
+        <StageFlow runId={id} runStatus={briefing.metadata.status} />
+      </div>
+
       <BriefingDetail briefing={briefing} />
     </div>
   );

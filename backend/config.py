@@ -50,6 +50,10 @@ _OPTIONAL_DEFAULTS = {
     "MAX_SOURCES": "15",
     "MAX_STEPS": "10",
     "MAX_TOKENS": "1500",
+    # PHASE 5 ADDITION — multi-tenant auth pilot flag.
+    # Default is "false" so the app behaves exactly as before unless
+    # explicitly opted in.  This is a pilot placeholder — not production auth.
+    "ENABLE_MULTI_TENANT_AUTH": "false",
 }
 
 
@@ -79,6 +83,10 @@ class Settings:
     max_sources: int
     max_steps: int
     max_tokens: int
+    # PHASE 5 ADDITION — multi-tenant auth pilot flag (off by default).
+    # When True a minimal username-only login modal is shown in the frontend.
+    # This is a pilot placeholder; set to False for all normal use.
+    enable_multi_tenant_auth: bool = False
 
 
 def _load_settings() -> Settings:
@@ -91,6 +99,13 @@ def _load_settings() -> Settings:
         max_sources=int(os.getenv("MAX_SOURCES", _OPTIONAL_DEFAULTS["MAX_SOURCES"])),
         max_steps=int(os.getenv("MAX_STEPS", _OPTIONAL_DEFAULTS["MAX_STEPS"])),
         max_tokens=int(os.getenv("MAX_TOKENS", _OPTIONAL_DEFAULTS["MAX_TOKENS"])),
+        # PHASE 5: parse the flag — any truthy string ("true", "1", "yes") enables it
+        enable_multi_tenant_auth=(
+            os.getenv(
+                "ENABLE_MULTI_TENANT_AUTH",
+                _OPTIONAL_DEFAULTS["ENABLE_MULTI_TENANT_AUTH"]
+            ).lower() in ("true", "1", "yes")
+        ),
     )
 
 

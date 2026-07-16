@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FilePlus, LayoutDashboard, Settings, Zap, History } from "lucide-react";
+import { FilePlus, LayoutDashboard, Settings, Zap, History, BarChart2 } from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/",          icon: FilePlus,        label: "New Briefing",  color: "#A9C6AE" },
-  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard",     color: "#93B6C4" },
-  { href: "/history",   icon: History,         label: "History",       color: "#E8C4A2" },
-  { href: "/settings",  icon: Settings,        label: "Settings",      color: "#C98B7A" },
+  { href: "/",          icon: FilePlus,        label: "New Briefing",     color: "#A9C6AE" },
+  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard",        color: "#93B6C4" },
+  { href: "/history",   icon: History,         label: "History",          color: "#E8C4A2" },
+  // PHASE 4 ADDITION — Usage Analytics link (additive, existing items unchanged)
+  { href: "/analytics", icon: BarChart2,       label: "Usage Analytics",  color: "#A9C6AE" },
+  { href: "/settings",  icon: Settings,        label: "Settings",         color: "#C98B7A" },
 ];
 
 export function Sidebar() {

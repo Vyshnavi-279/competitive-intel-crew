@@ -6,6 +6,8 @@ interface ReliabilityPanelProps {
   sourcesSkipped: string[];
   droppedCount: number;
   unverifiedCount: number;
+  /** PHASE 2 ADDITION — searches served from the local cache (0 = none) */
+  cacheHits?: number;
 }
 
 function CircleDial({ used, attempted }: { used: number; attempted: number }) {
@@ -68,6 +70,7 @@ export function ReliabilityPanel({
   sourcesSkipped,
   droppedCount,
   unverifiedCount,
+  cacheHits = 0,
 }: ReliabilityPanelProps) {
   return (
     <div className="clay-raised p-5">
@@ -88,6 +91,10 @@ export function ReliabilityPanel({
           <Stat label="Skipped" value={sourcesAttempted - sourcesUsed} color="#C98B7A" />
           <Stat label="Unverified claims" value={unverifiedCount} color="#E8C4A2" />
           <Stat label="Dropped claims" value={droppedCount} color="#C98B7A" />
+          {/* PHASE 2 ADDITION — cache hit line (only shown when > 0) */}
+          {cacheHits > 0 && (
+            <Stat label="Cache hits" value={cacheHits} color="#93B6C4" />
+          )}
         </div>
       </div>
 

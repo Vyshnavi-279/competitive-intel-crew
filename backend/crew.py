@@ -45,6 +45,78 @@ from backend.tools.safe_search_tool import SafeSearchTool
 
 from backend.config import settings
 
+# ---------------------------------------------------------------------------
+# PHASE 1 ADDITION — In-memory stage registry + DB-backed stage log
+# ---------------------------------------------------------------------------
+# _stage_registry holds the latest stage state per run_id so the API endpoint
+# can return live data without hitting SQLite on every poll.  It's a plain
+# dict (no locks needed — FastAPI runs crew tasks in a thread/async, and
+# individual dict updates in CPython are atomic for our purposes).
+# Format: { run_id: [ { stage_name, status, description, started_at, completed_at } ] }
+
+_stage_registry: dict = {}
+
+# Ordered stage definitions — name + one-line description of what's happening.
+_STAGE_DEFS = [
+    ("Coordinator",  "Planning the briefing outline and section structure"),
+    ("Researcher",   "Searching the web for sources and raw data"),
+    ("Analyst",      "Extracting and classifying claims from research"),
+    ("Fact-Checker", "Cross-checking every claim against the raw research"),
+    ("Writer",       "Composing the final structured briefing with citations"),
+]
+
+
+def _stage_start(run_id: str, stage_name: str, description: str) -> None:
+    """Record a stage as 'running' in memory and in SQLite.
+
+    Wrapped in a broad try/except — stage tracking must NEVER crash a run.
+    """
+    try:
+        from backend.storage.db import save_stage_start as _db_start
+        _db_start(run_id, stage_name, description)
+    except Exception:
+        pass  # DB failure is silent — in-memory registry still works
+
+    try:
+        from datetime import timezone
+        registry = _stage_registry.setdefault(run_id, [])
+        # Update existing entry or append a new one
+        for entry in registry:
+            if entry["stage_name"] == stage_name:
+                entry["status"] = "running"
+                entry["started_at"] = datetime.now(timezone.utc).isoformat()
+                entry["completed_at"] = None
+                return
+        registry.append({
+            "stage_name":   stage_name,
+            "status":       "running",
+            "description":  description,
+            "started_at":   datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+        })
+    except Exception:
+        pass
+
+
+def _stage_end(run_id: str, stage_name: str, status: str = "done") -> None:
+    """Mark a stage as done or failed in memory and in SQLite."""
+    try:
+        from backend.storage.db import save_stage_end as _db_end
+        _db_end(run_id, stage_name, status)
+    except Exception:
+        pass
+
+    try:
+        from datetime import timezone
+        registry = _stage_registry.get(run_id, [])
+        for entry in registry:
+            if entry["stage_name"] == stage_name:
+                entry["status"] = status
+                entry["completed_at"] = datetime.now(timezone.utc).isoformat()
+                return
+    except Exception:
+        pass
+
 # Configure litellm for Groq free-tier — keep retries low so a rate-limited
 # run fails fast rather than stacking 60s waits across 3 internal retries.
 # The outer retry loop in run_briefing() handles the meaningful retries.
@@ -321,17 +393,23 @@ write_task = Task(
         "Rules:\n"
         "1. Use EXACTLY those three ## headings, nothing else as a top-level heading.\n"
         "2. Under each heading, write 3-5 bullet points starting with '- '.\n"
-        "3. Every bullet point MUST end with at least one citation: "
-        "[Source Name](https://url)\n"
-        "4. The Executive Summary must end with a '- **Recommendation:**' bullet.\n"
-        "5. Keep each bullet to 1-2 sentences. Do not add preamble or closing remarks.\n"
-        "6. Do NOT include claims marked '[UNVERIFIED]' — skip them entirely.\n\n"
+        "3. CRITICAL — Every bullet point MUST end with at least one citation in\n"
+        "   EXACTLY this format: [Source Name](https://full-url-here)\n"
+        "   Example: - Notion raised prices 20% in March 2026. [TechCrunch](https://techcrunch.com/2026/notion)\n"
+        "   Do NOT use (parentheses), footnotes, or any other citation style.\n"
+        "   The ONLY accepted format is [Name](url) at the end of the bullet.\n"
+        "4. The Executive Summary must end with a '- **Recommendation:**' bullet\n"
+        "   that also ends with a [Source](url) citation.\n"
+        "5. Keep each bullet to 1-2 sentences. No preamble or closing remarks.\n"
+        "6. Do NOT include claims marked '[UNVERIFIED]' — skip them entirely.\n"
+        "7. If you do not have a URL, use the source name only: [Source Name]()\n"
+        "   but always include the [brackets](parens) structure on every bullet.\n\n"
         "Topic: {topic}"
     ),
     expected_output=(
         "A complete briefing with exactly three ## sections, each containing "
-        "3-5 bullet points, every bullet ending with [Source Name](url). "
-        "Nothing else — no intro text, no closing remarks."
+        "3-5 bullet points, EVERY bullet ending with [Source Name](url). "
+        "Nothing else — no intro text, no closing remarks, no tables."
     ),
     agent=writer,
     context=[fact_check_task],
@@ -471,6 +549,11 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
     # (The tool is a module-level singleton reused across runs.)
     _search_tool.search_count = 0
     _search_tool.skipped_sources = []
+    # PHASE 2: also reset cache hit counter
+    try:
+        _search_tool.cache_hits = 0
+    except Exception:
+        pass
 
     metadata = RunMetadata(
         run_id=run_id,
@@ -480,16 +563,72 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         triggered_by=triggered_by,  # type: ignore[arg-type]
     )
 
+    # ---- PHASE 1: initialise stage registry for this run -----------------
+    # Pre-populate all 5 stages as 'pending' so the frontend stepper can show
+    # all nodes immediately, before any stage has started.
+    try:
+        _stage_registry[run_id] = [
+            {
+                "stage_name":   name,
+                "status":       "pending",
+                "description":  desc,
+                "started_at":   None,
+                "completed_at": None,
+            }
+            for name, desc in _STAGE_DEFS
+        ]
+    except Exception:
+        pass  # stage tracking must never crash the run
+
     try:
         # ---- Kick off the crew (with 429 retry logic) ---------------------
         # Retry up to 2 times on rate-limit errors with a short fixed delay.
         # litellm.num_retries=3 handles lower-level retries; this outer loop
         # handles full crew-kickoff level 429s that slip through.
+
+        # PHASE 1: Register stage callbacks on each task so we can track
+        # progress without changing the crew's sequential logic.
+        # Each task callback fires AFTER the task completes — we pair it with
+        # a _stage_start call injected before kickoff via a mapping.
+        _TASK_STAGE_MAP = [
+            (planning_task,    "Coordinator"),
+            (research_task,    "Researcher"),
+            (analyze_task,     "Analyst"),
+            (fact_check_task,  "Fact-Checker"),
+            (write_task,       "Writer"),
+        ]
+        _stage_desc_map = dict(_STAGE_DEFS)
+
+        # Attach after-completion callbacks to each task (CrewAI Task supports
+        # a `callback` kwarg that fires with the task output when done).
+        # Use a closure to capture run_id and stage name safely.
+        def _make_stage_callback(r_id: str, s_name: str):
+            def _cb(output):  # noqa: ANN001
+                try:
+                    _stage_end(r_id, s_name, "done")
+                except Exception:
+                    pass
+            return _cb
+
+        try:
+            for task_obj, stage_nm in _TASK_STAGE_MAP:
+                task_obj.callback = _make_stage_callback(run_id, stage_nm)
+        except Exception:
+            pass  # never block execution for stage tracking
+
         _MAX_RETRIES = 2
         _attempt = 0
         result = None
         while True:
             try:
+                # PHASE 1: mark Coordinator as running before kickoff
+                # (CrewAI runs tasks sequentially, so Coordinator is first)
+                try:
+                    _stage_start(run_id, "Coordinator",
+                                 _stage_desc_map.get("Coordinator", ""))
+                except Exception:
+                    pass
+
                 result = await crew.kickoff_async(inputs={"topic": topic})
                 break  # success — exit retry loop
             except Exception as _kick_exc:
@@ -516,6 +655,22 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # crew.kickoff returns a CrewOutput; the final task's output is in
         # result.raw or can be accessed as a string.
         raw_output = str(result) if result else ""
+
+        # PHASE 1: mark any stages that are still pending/running as done
+        # (handles the 4 stages after Coordinator whose _stage_start we
+        # couldn't inject without modifying the crew internals).
+        try:
+            for entry in _stage_registry.get(run_id, []):
+                if entry["status"] in ("pending", "running"):
+                    entry["status"] = "done"
+                    if entry["started_at"] is None:
+                        from datetime import timezone
+                        entry["started_at"] = datetime.now(timezone.utc).isoformat()
+                    if entry["completed_at"] is None:
+                        from datetime import timezone
+                        entry["completed_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception:
+            pass
 
         # Guard: if the raw output looks like an exception traceback or rate-limit
         # error message, do not attempt to parse it as briefing content.
@@ -565,6 +720,11 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         metadata.sources_skipped = _search_tool.skipped_sources
         metadata.sources_attempted = _search_tool.search_count + len(_search_tool.skipped_sources)
         metadata.total_steps = MAX_STEPS
+        # PHASE 2: surface cache_hits from the search tool in metadata
+        try:
+            metadata.cache_hits = getattr(_search_tool, "cache_hits", 0)
+        except Exception:
+            pass  # never break on new fields
 
         # ---- KPI 1: % of claims cited (SPEC.md §3) -----------------------
         # Count after governance has run so the percentage reflects the final
@@ -601,6 +761,14 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         metadata.sources_attempted = _search_tool.search_count + len(_search_tool.skipped_sources)
         metadata.total_steps = MAX_STEPS
         metadata.status = "failed"
+
+        # PHASE 1: mark any still-running/pending stages as failed
+        try:
+            for entry in _stage_registry.get(run_id, []):
+                if entry["status"] in ("pending", "running"):
+                    entry["status"] = "failed"
+        except Exception:
+            pass
 
         # ---- Map exception to a human-readable message -------------------
         exc_str = str(exc)
