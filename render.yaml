@@ -19,7 +19,7 @@ services:
       - key: MAX_STEPS
         value: "10"
       - key: PYTHON_VERSION
-        value: "3.11.0"
+        value: "3.12.0"
     disk:
       name: sqlite-data
       mountPath: /data
