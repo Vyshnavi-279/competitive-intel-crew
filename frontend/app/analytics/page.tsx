@@ -136,7 +136,7 @@ export default function AnalyticsPage() {
     else setLoading(true);
     setError(null);
     try {
-      const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "https://competitive-intel-crew-2.onrender.com";
       const res = await fetch(`${API_BASE}/api/analytics/usage`);
       if (!res.ok) throw new Error(`API ${res.status}`);
       const json: UsageData = await res.json();
