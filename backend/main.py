@@ -48,6 +48,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# ── Logging must be configured FIRST — before any other backend import ────────
+# This ensures that log records emitted during module-level code in crew.py,
+# config.py, etc. are captured with the correct handlers and formatters.
+from backend.logging_config import setup_logging
+setup_logging()
+
 # Config is imported first so a missing env var aborts startup immediately.
 from backend.config import settings  # noqa: F401  (validates on import)
 from backend.crew import run_briefing

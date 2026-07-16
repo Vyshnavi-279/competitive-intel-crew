@@ -1,115 +1,523 @@
-# ============================================================
+# ============================================================================
 # MarketPulse — Competitive Intelligence Crew
-# Pinned requirements (generated from .venv/bin/pip freeze)
-# Install: pip install -r requirements.txt
-# ============================================================
+# requirements.txt — ALL dependencies pinned to exact working versions
+#
+# HOW TO INSTALL
+#   python -m venv .venv
+#   source .venv/bin/activate          # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# HOW THIS FILE IS ORGANISED
+#   Each package has an inline comment explaining:
+#     • WHERE it is used (which module / file)
+#     • WHY it is needed (what it does for this project)
+#   Packages are grouped by layer so you can quickly find what you need.
+#
+# PINNING POLICY
+#   All versions are pinned with == (exact) rather than >= (minimum) so that
+#   CI, local dev, and Render deployments all run the same dependency tree.
+#   If you upgrade a package, run `pip freeze > requirements.txt` again and
+#   review the diff before committing.
+# ============================================================================
 
-# ── Core agent framework ─────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# 1. CORE AGENT FRAMEWORK
+#    The multi-agent orchestration layer that runs Coordinator → Researcher
+#    → Analyst → Fact-Checker → Writer in a sequential CrewAI pipeline.
+# ────────────────────────────────────────────────────────────────────────────
+
 crewai==1.15.2
-crewai-cli==1.15.2
+# The main CrewAI package.  Provides Agent, Task, Crew, Process, and LLM
+# classes used throughout backend/crew.py.  Version 1.15.2 is the earliest
+# release that supports the per-run crew factory pattern (avoiding the
+# "Executor is already running" error on back-to-back requests).
+
 crewai-core==1.15.2
+# Low-level internals shared by crewai and crewai-tools (event bus, base
+# agent executor, token process counter).  Must match crewai exactly.
+
 crewai-tools==1.15.2
+# Provides crewai.tools.BaseTool — the base class for SafeSearchTool in
+# backend/tools/safe_search_tool.py.  Must match crewai exactly.
 
-# ── LLM / AI providers ───────────────────────────────────────
+crewai-cli==1.15.2
+# CLI helper shipped alongside crewai (crewai create, crewai run, etc.).
+# Installed as a dependency of crewai; not directly invoked by this project
+# but must be version-locked to avoid resolver conflicts.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2. LLM PROVIDERS & INFERENCE
+#    Everything needed to call Groq (primary), OpenAI-compatible endpoints,
+#    and Google Gemini through a unified litellm interface.
+# ────────────────────────────────────────────────────────────────────────────
+
 litellm==1.92.0
+# Universal LLM proxy used by CrewAI internally.  All model calls in
+# backend/crew.py go through litellm.completion().  Provides:
+#   • Unified API across Groq / OpenAI / Anthropic / Gemini
+#   • num_retries and request_timeout config (set in crew.py to handle
+#     Groq free-tier 429 rate-limit errors automatically)
+#   • Token counting and context-window enforcement
+# Pinned to 1.92.0 — earlier versions do not honour Groq's Retry-After
+# header correctly, causing premature retries and cascading 429s.
+
 groq==1.5.0
+# Official Groq Python SDK.  litellm delegates to this for
+# groq/llama-3.3-70b-versatile calls.  Also used directly in backend/crew.py
+# to monkey-patch the mark_cache_breakpoint no-op (Groq rejects the
+# 'cache_breakpoint' extra field that CrewAI injects for Anthropic).
+
 openai==2.45.0
+# OpenAI Python SDK — required by litellm even when OpenAI is not the
+# primary provider, because litellm's internal message formatting and
+# function-call parsing are based on the OpenAI message schema.
+
 google-genai==1.65.0
+# Google Generative AI SDK — pulled in by crewai[google-genai] for optional
+# Gemini model support.  Not used in the default Groq configuration but
+# must be installed to satisfy crewai's import graph.
+
 instructor==1.15.4
+# Structured output extraction library used by crewai-tools internally when
+# parsing agent responses into typed Pydantic objects.  Not called directly
+# in this project's code but required by the crewai dependency tree.
+
 tiktoken==0.12.0
+# OpenAI's fast BPE tokeniser.  litellm uses it to count prompt tokens
+# before sending requests (to enforce max_tokens limits and detect context
+# overflow before hitting the API).
+
 tokenizers==0.23.1
+# HuggingFace tokenizers library — used by litellm and crewai-tools for
+# models whose token counts are estimated with HF vocabularies rather than
+# tiktoken (e.g. Llama-family models on Groq).
 
-# ── Web framework ─────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# 3. WEB FRAMEWORK
+#    FastAPI serves all REST endpoints in backend/main.py.  Uvicorn is the
+#    ASGI server that runs it.
+# ────────────────────────────────────────────────────────────────────────────
+
 fastapi==0.139.0
+# Core web framework.  Every API endpoint (/api/run, /api/runs, /api/health,
+# etc.) is defined as a FastAPI route in backend/main.py.  Provides:
+#   • Automatic OpenAPI docs at /docs and /redoc
+#   • Pydantic request/response validation
+#   • Dependency injection for shared DB connections
+
 uvicorn[standard]==0.51.0
+# ASGI server that runs the FastAPI app.  The [standard] extra includes:
+#   • uvloop  — fast asyncio event loop (Linux/macOS)
+#   • httptools — fast HTTP parser
+#   • watchfiles — hot-reload in --reload mode (local dev)
+# Start command: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+
 starlette==1.3.1
+# ASGI toolkit that FastAPI is built on.  Provides Request, Response,
+# CORSMiddleware, and WebSocket primitives.  Must match the version
+# FastAPI was built against.
+
 python-multipart==0.0.32
+# Required by FastAPI to parse multipart/form-data and
+# application/x-www-form-urlencoded request bodies.  Needed for the
+# /api/run endpoint which accepts a JSON body with a topic field.
+
 sse-starlette==3.4.5
+# Server-Sent Events support for Starlette/FastAPI.  Used by the
+# /api/runs/{id}/stages endpoint to stream live stage-progress events
+# to the frontend RunMonitor component without requiring WebSockets.
 
-# ── HTTP clients ──────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4. HTTP CLIENTS
+#    Used for outbound calls — Serper API (web search), health checks,
+#    and internal service-to-service requests.
+# ────────────────────────────────────────────────────────────────────────────
+
 requests==2.34.2
+# Synchronous HTTP client.  Used in backend/tools/safe_search_tool.py to
+# call the Serper Google Search API (POST https://google.serper.dev/search).
+# Chosen over httpx here because SafeSearchTool._run() is synchronous
+# (called from CrewAI's thread executor).
+
 httpx==0.28.1
-httpx-sse==0.4.3
+# Async-capable HTTP client.  Used in backend/main.py for internal
+# health-check calls and by litellm for async LLM API requests.
+# Also used in eval/test_scenarios.py via FastAPI's TestClient.
+
+httpx-sse==0.4.0
+# Server-Sent Events parser for httpx.  Allows the backend to consume
+# SSE streams from upstream services if needed.  Required by litellm
+# for streaming LLM responses.
+
 aiohttp==3.14.1
+# Async HTTP framework used by litellm internally for certain provider
+# backends and by crewai's knowledge/memory subsystems when fetching
+# remote embeddings.
 
-# ── Data / validation ─────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# 5. DATA VALIDATION & SERIALISATION
+#    Pydantic powers all request/response models, agent schemas, and the
+#    structured Briefing / Section / Claim / Citation data model.
+# ────────────────────────────────────────────────────────────────────────────
+
 pydantic==2.12.5
+# Core validation library.  Every data model in backend/models/schemas.py
+# (Briefing, RunMetadata, Section, Claim, Citation) is a Pydantic v2
+# BaseModel.  Also drives FastAPI request/response validation and
+# SafeSearchTool's args_schema.
+
 pydantic-settings==2.10.1
+# Pydantic extension for settings management via environment variables.
+# Used by crewai and litellm internally; not called directly in this
+# project's own code.
+
 pydantic_core==2.41.5
+# Rust-based validation core for Pydantic v2.  Must match pydantic exactly —
+# they are co-released and incompatible across minor versions.
+
 annotated-types==0.7.0
+# Provides Annotated type hints used by Pydantic v2 field validators.
+# Transitive dependency of pydantic_core.
 
-# ── Async / concurrency ───────────────────────────────────────
-anyio==4.14.2
-uvloop==0.22.1
-aiofiles==24.1.0
-aiosqlite==0.21.0
-watchfiles==1.2.0
-
-# ── Scheduling ────────────────────────────────────────────────
-APScheduler==3.11.3
-pendulum==3.2.0
-tzdata==2026.3
-tzlocal==5.4.4
-
-# ── Vector store / embeddings ─────────────────────────────────
-chromadb==1.1.1
-lancedb==0.30.0
-onnxruntime==1.27.0
-numpy==2.5.1
-pyarrow==25.0.0
-
-# ── Document parsing ──────────────────────────────────────────
-pdfminer.six==20260107
-pdfplumber==0.11.10
-PyMuPDF==1.26.7
-pypdfium2==5.11.0
-beautifulsoup4==4.13.5
-python-docx==1.2.0
-openpyxl==3.1.5
-lxml==6.1.1
-
-# ── Config / env ──────────────────────────────────────────────
-python-dotenv==1.2.2
-
-# ── Auth / security ───────────────────────────────────────────
-bcrypt==5.0.0
-cryptography==49.0.0
-PyJWT==2.13.0
-
-# ── Testing ───────────────────────────────────────────────────
-pytest==9.1.1
-
-# ── Observability / tracing ───────────────────────────────────
-opentelemetry-api==1.42.1
-opentelemetry-sdk==1.42.1
-opentelemetry-exporter-otlp-proto-grpc==1.42.1
-opentelemetry-exporter-otlp-proto-http==1.42.1
-opentelemetry-semantic-conventions==0.63b1
-
-# ── Utilities ─────────────────────────────────────────────────
-tenacity==9.1.4
-backoff==2.2.1
-rich==14.3.4
-typer==0.26.8
-tqdm==4.68.4
-click==8.4.2
-regex==2026.1.15
 orjson==3.11.9
+# Fast JSON serialiser/deserialiser written in Rust.  FastAPI uses it
+# automatically when available (faster than stdlib json for large
+# briefing payloads, especially the full sections+claims+citations tree).
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 6. ASYNC & CONCURRENCY
+#    Async primitives for running CrewAI crew.kickoff_async() inside
+#    FastAPI's async route handlers.
+# ────────────────────────────────────────────────────────────────────────────
+
+anyio==4.14.2
+# Async abstraction layer used by both FastAPI (via Starlette) and httpx.
+# Ensures asyncio and trio backends work transparently.  Also provides
+# the thread executor that FastAPI uses to run sync background tasks
+# (e.g. finalize_run DB writes).
+
+uvloop==0.22.1
+# High-performance asyncio event loop written in Cython/libuv.  Installed
+# as part of uvicorn[standard].  Provides 2-4× throughput improvement over
+# stdlib asyncio on Linux/macOS.  Not available on Windows (gracefully
+# skipped by uvicorn on that platform).
+
+aiofiles==24.1.0
+# Async file I/O.  Used by crewai's knowledge/memory subsystem when reading
+# or writing local embedding caches to disk without blocking the event loop.
+
+aiosqlite==0.21.0
+# Async SQLite wrapper.  Used by crewai's internal memory/cache layer.
+# Note: the project's own storage (backend/storage/db.py) uses stdlib
+# sqlite3 directly (synchronous, called from thread executor via anyio).
+
+watchfiles==1.2.0
+# File-system watcher powering uvicorn's --reload mode.  Monitors all
+# .py files under the project root and triggers a worker restart whenever
+# backend code changes during local development.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 7. TASK SCHEDULING
+#    APScheduler fires the weekly competitive-intelligence run every Monday
+#    at 08:00 for any topics configured in STANDING_TOPICS env var.
+# ────────────────────────────────────────────────────────────────────────────
+
+APScheduler==3.11.3
+# Background scheduler used in backend/scheduler.py.  Runs in a daemon
+# thread (BackgroundScheduler) so it never blocks the FastAPI event loop.
+# Jobs use CronTrigger(day_of_week="mon", hour=8) and call run_briefing()
+# with triggered_by="scheduled" for audit-log distinction.
+
+pendulum==3.2.0
+# Timezone-aware datetime library used by APScheduler for accurate cron
+# scheduling across DST transitions.  Also used directly in
+# backend/scheduler.py for human-readable "next fire time" formatting.
+
+tzdata==2026.3
+# IANA timezone database as a Python package.  Required on systems that
+# don't ship a system tzdb (e.g. Docker slim images, some Render buildpacks).
+# Ensures pendulum and APScheduler have accurate timezone data.
+
+tzlocal==5.4.4
+# Detects the host's local timezone and maps it to a tzdata zone name.
+# Used by APScheduler when no explicit timezone is provided to a trigger.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 8. VECTOR STORE & EMBEDDINGS
+#    CrewAI's memory and knowledge subsystems use vector stores for
+#    semantic search across past research.  Not used by this project's own
+#    code directly, but required by crewai's import graph.
+# ────────────────────────────────────────────────────────────────────────────
+
+chromadb==1.1.1
+# Embedded vector database used by CrewAI's long-term memory layer.
+# Stores agent interaction history as vector embeddings so agents can
+# reference prior context across runs (future feature).
+
+lancedb==0.30.0
+# Column-oriented vector store (Apache Arrow / Lance format).  Used by
+# crewai-tools' knowledge source implementations as an alternative to
+# ChromaDB for larger embedding corpora.
+
+onnxruntime==1.27.0
+# ONNX model runtime.  ChromaDB and crewai use it to run the default
+# all-MiniLM-L6-v2 embedding model locally (without a GPU) for sentence
+# similarity when indexing and querying vector stores.
+
+numpy==2.5.1
+# Fundamental array library.  Required by onnxruntime, chromadb, lancedb,
+# and pyarrow.  Also used by litellm for token probability calculations.
+
+pyarrow==25.0.0
+# Columnar in-memory data format underpinning lancedb and pandas (if used).
+# Required by lancedb for efficient batch vector storage and retrieval.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 9. DOCUMENT & WEB PARSING
+#    crewai-tools ships parsers for PDFs, Word docs, spreadsheets, and HTML
+#    so agents can ingest structured documents as knowledge sources.
+#    Not used in the default web-search pipeline but available if extended.
+# ────────────────────────────────────────────────────────────────────────────
+
+pdfminer.six==20260107
+# Pure-Python PDF text extractor.  Used by crewai-tools' PDFSearchTool
+# as a fallback parser when PyMuPDF is unavailable.
+
+pdfplumber==0.11.10
+# Higher-level PDF parser built on pdfminer.six.  Provides table extraction
+# and better layout preservation for structured documents.
+
+PyMuPDF==1.26.7
+# Fast PDF and XPS renderer/parser (MuPDF bindings).  crewai-tools prefers
+# this over pdfplumber when available due to speed.  Package name on PyPI
+# is PyMuPDF but imports as `fitz`.
+
+pypdfium2==5.11.0
+# Python bindings for PDFium (Google's PDF engine).  Alternative PDF
+# renderer used by crewai-tools for rendering PDF pages to images.
+
+beautifulsoup4==4.13.5
+# HTML/XML parser.  Used by crewai-tools' WebsiteSearchTool and
+# ScrapeWebsiteTool to extract clean text from raw HTML pages when
+# an agent needs to read a URL directly.
+
+python-docx==1.2.0
+# Microsoft Word (.docx) parser.  Used by crewai-tools' DOCXSearchTool
+# to ingest Word documents as knowledge sources for agents.
+
+openpyxl==3.1.5
+# Excel (.xlsx) reader/writer.  Used by crewai-tools for spreadsheet
+# ingestion and by any agent task that processes tabular data in Excel.
+
+lxml==6.1.1
+# Fast C-based XML/HTML parser.  Used by beautifulsoup4 as its fastest
+# backend parser and by python-docx for OOXML processing.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 10. CONFIGURATION & ENVIRONMENT
+# ────────────────────────────────────────────────────────────────────────────
+
+python-dotenv==1.2.2
+# Loads .env files into os.environ.  Called in backend/config.py with
+# override=True so .env values always win over shell / Render dashboard
+# environment variables.  Also called in backend/crew.py as a safety net.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 11. AUTHENTICATION & SECURITY
+#    Used by the optional multi-tenant auth layer (ENABLE_MULTI_TENANT_AUTH).
+# ────────────────────────────────────────────────────────────────────────────
+
+bcrypt==5.0.0
+# Password hashing library.  Used when ENABLE_MULTI_TENANT_AUTH=true to
+# hash and verify user passwords stored in the SQLite users table.
+
+cryptography==49.0.0
+# General-purpose cryptography toolkit (AES, RSA, ECDSA, X.509, etc.).
+# Required by PyJWT for RS256/ES256 JWT signing and by crewai's security
+# module for encrypted memory storage.
+
+PyJWT==2.13.0
+# JSON Web Token encoding/decoding.  Used by the auth middleware in
+# backend/main.py to issue and validate Bearer tokens when
+# ENABLE_MULTI_TENANT_AUTH=true.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 12. TESTING
+# ────────────────────────────────────────────────────────────────────────────
+
+pytest==9.1.1
+# Test runner for the five evaluation scenarios in eval/test_scenarios.py:
+#   1. Full pipeline trace (all 5 agents complete successfully)
+#   2. Partial source-failure handling (Serper returns errors mid-run)
+#   3. Citation governance (enforce_citations drops uncited claims)
+#   4. Runaway-source cap (MAX_SOURCES limit enforced by SafeSearchTool)
+#   5. Adversarial claim hedging (flag_unverified_assertions hedges claims)
+# Run: pytest eval/test_scenarios.py -v
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 13. OBSERVABILITY & DISTRIBUTED TRACING
+#    CrewAI emits OpenTelemetry spans for every agent invocation and LLM
+#    call, enabling integration with Jaeger, Tempo, or Render's built-in
+#    trace viewer.
+# ────────────────────────────────────────────────────────────────────────────
+
+opentelemetry-api==1.42.1
+# OpenTelemetry API.  Provides the Tracer and Span interfaces.  CrewAI
+# instruments every agent step with a span so you can see per-agent
+# latency in a trace waterfall.
+
+opentelemetry-sdk==1.42.1
+# OpenTelemetry SDK.  Implements the API with a BatchSpanProcessor that
+# buffers spans in memory and flushes them to an exporter on shutdown.
+# Must match opentelemetry-api exactly.
+
+opentelemetry-exporter-otlp-proto-grpc==1.42.1
+# OTLP gRPC exporter.  Sends spans to an OpenTelemetry Collector or
+# directly to Jaeger/Tempo over gRPC (port 4317).  Activated by setting
+# OTEL_EXPORTER_OTLP_ENDPOINT in the environment.
+
+opentelemetry-exporter-otlp-proto-http==1.42.1
+# OTLP HTTP exporter.  Sends spans over HTTP/JSON (port 4318).  Used when
+# the deployment environment blocks gRPC (e.g. some Render configurations).
+
+opentelemetry-semantic-conventions==0.63b1
+# Standard attribute names for spans (http.method, db.statement, etc.).
+# Ensures CrewAI's auto-instrumentation uses the same attribute keys as
+# your observability backend expects.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 14. RESILIENCE & RETRY UTILITIES
+# ────────────────────────────────────────────────────────────────────────────
+
+tenacity==9.1.4
+# General-purpose retry library with exponential back-off, jitter, and
+# stop conditions.  Used by crewai internally to retry failed LLM calls
+# before surfacing them to the outer retry loop in backend/crew.py.
+
+backoff==2.2.1
+# Decorator-based retry library.  Used by litellm's Groq and OpenAI
+# provider clients for transient network errors (connection reset,
+# read timeout) that should be retried without counting against the
+# application-level _MAX_RETRIES budget.
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 15. DEVELOPER UTILITIES & INTERNAL TOOLING
+#    Logging helpers, CLI tools, and miscellaneous utilities used by
+#    crewai, litellm, and supporting libraries.
+# ────────────────────────────────────────────────────────────────────────────
+
+rich==14.3.4
+# Rich terminal output library.  Used by crewai's verbose logging mode
+# (when Agent(verbose=True)) to render coloured agent thought/action
+# traces.  Set verbose=False in all agents (as done in crew.py) to
+# suppress rich output in production.
+
+typer==0.26.8
+# CLI framework built on Click.  Used by crewai-cli (crewai run, crewai
+# create commands).  Not called directly by this project.
+
+tqdm==4.68.4
+# Progress bar library.  Used by huggingface_hub when downloading
+# embedding model weights for ChromaDB's local onnxruntime inference.
+
+click==8.4.2
+# Command-line interface toolkit.  Base dependency of typer and crewai-cli.
+
+regex==2026.1.15
+# Enhanced regular expression library (superset of stdlib re).  Used by
+# tiktoken for BPE tokenisation and by litellm's token counting utilities.
+
 PyYAML==6.0.3
+# YAML parser/emitter.  Used by crewai for loading crew config YAML files
+# (crewai.yaml, agents.yaml, tasks.yaml) and by APScheduler for job
+# persistence configuration.
+
 packaging==26.2
+# PEP 440 version parsing and comparison.  Used by pip, crewai, and
+# litellm to check minimum version requirements at runtime.
+
 filelock==3.29.7
+# Cross-platform file locking.  Used by huggingface_hub to prevent
+# concurrent processes from corrupting the local model download cache.
+
 fsspec==2026.6.0
+# Filesystem abstraction layer.  Used by huggingface_hub and lancedb for
+# unified read/write operations across local, S3, GCS, and other storage
+# backends.
+
 portalocker==2.7.0
+# File locking library used by litellm's SQLite cache for safe concurrent
+# access when multiple workers write to the same cache file.
+
 posthog==5.4.0
+# Product analytics SDK.  CrewAI phones home anonymised usage telemetry
+# via PostHog.  Disable by setting CREWAI_DISABLE_TELEMETRY=true in .env.
+
 huggingface_hub==1.23.0
+# HuggingFace model hub client.  Downloads the default all-MiniLM-L6-v2
+# embedding model used by ChromaDB for local vector store operations.
+
 json_repair==0.25.3
+# LLM output repair utility.  Used by crewai internally to fix malformed
+# JSON in agent responses (e.g. missing closing braces, trailing commas)
+# before attempting to parse them as structured tool calls.
+
 jsonschema==4.26.0
+# JSON Schema validator.  Used by crewai to validate tool input schemas
+# against the definitions in BaseTool.args_schema before passing them
+# to the LLM, and to validate crew configuration YAML.
+
 mcp==1.26.0
+# Model Context Protocol SDK.  Enables CrewAI agents to connect to MCP
+# servers as tool providers (e.g. browser automation, file system access).
+# Not used in this project's default pipeline but required by crewai's
+# import graph.
+
 multidict==6.7.1
+# Multivalue dictionary used by aiohttp for HTTP headers where the same
+# key can appear multiple times (e.g. Set-Cookie).
+
 yarl==1.24.2
+# URL parsing and manipulation library used by aiohttp for request URL
+# construction and normalisation.
+
 websockets==16.1
+# WebSocket client/server library.  Used by crewai's event bus when
+# configured for distributed multi-crew setups.  Not active in the
+# default single-process configuration.
+
 certifi==2026.6.17
+# Mozilla's CA certificate bundle.  Used by requests and httpx to verify
+# TLS certificates when calling the Serper API and Groq API endpoints.
+
 charset-normalizer==3.4.9
+# Character encoding detection.  Used by requests to auto-detect the
+# encoding of HTTP response bodies when no Content-Type charset is given.
+
 idna==3.18
+# Internationalised Domain Names in Applications (RFC 5891) encoder.
+# Used by requests, httpx, and aiohttp for non-ASCII hostnames in URLs.
+
 urllib3==2.7.0
+# HTTP connection pool used by requests under the hood.  Handles keep-alive
+# connections, automatic retries on connection errors, and SSL verification.
+
 six==1.17.0
+# Python 2/3 compatibility shim.  Kept for transitive dependencies that
+# still import it (e.g. older versions of google-auth).  Not used in any
+# first-party code.

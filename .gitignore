@@ -8,3 +8,4 @@ node_modules/
 *.db
 eval/eval_report.md
 .DS_Store
+backend/logs/

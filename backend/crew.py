@@ -571,11 +571,17 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # litellm.num_retries=3 handles lower-level retries; this outer loop
         # handles full crew-kickoff level 429s that slip through.
 
+        logger.info(
+            "[run:%s] Starting briefing run | topic=%r triggered_by=%s",
+            run_id, topic, triggered_by,
+        )
+
         # ---- Build a fresh crew for this run --------------------------------
         # A module-level singleton crew causes "Executor is already running"
         # on back-to-back or concurrent requests. Build new instances here.
         crew, _TASK_STAGE_MAP = _build_crew(run_id)
         _stage_desc_map = dict(_STAGE_DEFS)
+        logger.debug("[run:%s] Crew built with %d agents", run_id, len(crew.agents))
 
         # Attach after-completion callbacks to each task (CrewAI Task supports
         # a `callback` kwarg that fires with the task output when done).
@@ -589,11 +595,16 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             def _cb(output):  # noqa: ANN001
                 try:
                     _stage_end(r_id, s_name, "done")
+                    logger.info("[run:%s] Stage completed | stage=%s", r_id, s_name)
                 except Exception:
                     pass
                 # Don't sleep after the final Writer stage — run is done.
                 if s_name != "Writer":
                     try:
+                        logger.debug(
+                            "[run:%s] Inter-agent sleep %ds before next stage",
+                            r_id, _INTER_AGENT_SLEEP,
+                        )
                         time.sleep(_INTER_AGENT_SLEEP)
                     except Exception:
                         pass
@@ -631,6 +642,7 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     pass
 
                 result = await crew.kickoff_async(inputs={"topic": topic})
+                logger.info("[run:%s] Crew kickoff succeeded on attempt %d", run_id, _attempt + 1)
                 break  # success — exit retry loop
             except Exception as _kick_exc:
                 exc_str = str(_kick_exc)
@@ -721,9 +733,17 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
 
         # ---- Governance layer 1: drop uncited claims ----------------------
         sections, citation_flags = enforce_citations(sections, run_id=run_id)
+        logger.info(
+            "[run:%s] Governance pass 1 complete | dropped_flags=%d",
+            run_id, len(citation_flags),
+        )
 
         # ---- Governance layer 2: flag weakly‑sourced high‑risk claims -----
         sections, unverified_flags = flag_unverified_assertions(sections, run_id=run_id)
+        logger.info(
+            "[run:%s] Governance pass 2 complete | unverified_flags=%d",
+            run_id, len(unverified_flags),
+        )
 
         # ---- Build metadata -----------------------------------------------
         ended_at = datetime.utcnow()
@@ -755,6 +775,14 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # "pending_review" — a human must approve before "published".
         metadata.status = "pending_review"
 
+        logger.info(
+            "[run:%s] Run completed successfully | duration=%.1fs sections=%d "
+            "claims=%d cited_pct=%s sources_used=%d cache_hits=%d",
+            run_id, duration, len(sections), _total,
+            metadata.cited_claims_pct, metadata.sources_used,
+            getattr(metadata, "cache_hits", 0),
+        )
+
         return Briefing(
             metadata=metadata,
             sections=sections,
@@ -775,6 +803,12 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         metadata.sources_attempted = _search_tool.search_count + len(_search_tool.skipped_sources)
         metadata.total_steps = MAX_STEPS
         metadata.status = "failed"
+
+        logger.error(
+            "[run:%s] Run failed | duration=%.1fs error=%s: %s",
+            run_id, duration, type(exc).__name__, str(exc)[:300],
+            exc_info=False,  # full traceback goes to errors.log via root handler
+        )
 
         # PHASE 1: mark any still-running/pending stages as failed
         try:
