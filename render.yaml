@@ -13,7 +13,7 @@ services:
       - key: MODEL_NAME
         value: groq/llama-3.3-70b-versatile   # locked here — do NOT set this in the dashboard
       - key: MAX_TOKENS
-        value: "1000"
+        value: "2048"
       - key: MAX_SOURCES
         value: "3"
       - key: MAX_STEPS

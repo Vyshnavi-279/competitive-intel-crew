@@ -25,7 +25,6 @@ import asyncio
 import logging
 import os
 import re
-import time
 from datetime import datetime
 from typing import List
 from uuid import uuid4
@@ -118,11 +117,15 @@ def _stage_end(run_id: str, stage_name: str, status: str = "done") -> None:
     except Exception:
         pass
 
-# Configure litellm for Groq free-tier — keep retries low so a rate-limited
-# run fails fast rather than stacking 60s waits across 3 internal retries.
-# The outer retry loop in run_briefing() handles the meaningful retries.
-litellm.num_retries = 1
-litellm.request_timeout = 30
+# Configure litellm for Groq free-tier.
+# num_retries=3: on a 429 litellm will retry up to 3 times, honouring the
+# Retry-After header that Groq sends back (the actual seconds to wait).
+# This means rate-limit errors are handled transparently at the LLM call
+# level, before CrewAI's flow runtime ever sees them — eliminating the
+# "failed to generate a valid tool call" error that occurred when the
+# 429 interrupted a mid-execution tool-call round-trip.
+litellm.num_retries = 3
+litellm.request_timeout = 60  # raise from 30 — Groq can be slow under load
 
 # load_dotenv is called by config.py at import time; calling it again here is
 # harmless (override=True ensures the .env file wins over any stale env vars).
@@ -166,22 +169,31 @@ if "anthropic" not in settings.model_name.lower():
         pass
 
 llm = LLM(
-    model=settings.model_name,          # text-only agents (coordinator, analyst, etc.)
-    api_key=settings.llm_api_key,       # correct key for whatever provider is configured
+    model=settings.model_name,          # writer + coordinator (need quality)
+    api_key=settings.llm_api_key,
     max_tokens=settings.max_tokens,
 )
 
-# For the researcher we use llama-3.1-8b-instant on Groq (handles JSON tool
-# calls reliably). If the main model is already 8b-instant, reuse it directly.
-_researcher_model = (
-    "groq/llama-3.1-8b-instant"
-    if settings.provider == "groq"
-    else settings.model_name
-)
+# WHY ALL AGENTS USE THE SAME MODEL:
+# llama-3.1-8b-instant has a 6,000 TPM (tokens-per-minute) limit on Groq's
+# free tier.  A single researcher tool-call round-trip (system prompt + tool
+# schema + conversation history + response) easily consumes 1,500–5,000
+# tokens, exhausting the bucket within 1-2 calls and producing a 429
+# RateLimitError that CrewAI surfaces as "failed to generate a valid tool
+# call".  llama-3.3-70b-versatile has a 12,000 TPM free-tier limit — double
+# the headroom — and handles function/tool calling more reliably.
+# We use a single LLM object for all agents so there is only one token bucket
+# to manage and the inter-agent sleep delays (below) keep us inside the limit.
 _researcher_llm = LLM(
-    model=_researcher_model,
+    model=settings.model_name,   # groq/llama-3.3-70b-versatile — 12k TPM, reliable tool calls
     api_key=settings.llm_api_key,
-    max_tokens=300,   # researcher only needs short tool calls + a brief summary
+    max_tokens=1024,
+)
+
+_analyst_llm = LLM(
+    model=settings.model_name,   # groq/llama-3.3-70b-versatile — consistent with researcher
+    api_key=settings.llm_api_key,
+    max_tokens=1500,
 )
 
 # ---------------------------------------------------------------------------
@@ -195,12 +207,21 @@ _search_tool = SafeSearchTool()
 # ---------------------------------------------------------------------------
 # Per-agent iteration budgets — kept tight to minimise LLM calls on the
 # Groq free tier (30 RPM / 6000 TPM per minute).
-_RESEARCHER_MAX_ITER = 2   # 1 search + 1 summary is enough
-_WRITER_MAX_ITER = 1       # one shot — no tools needed
-_DEFAULT_MAX_ITER = 1      # coordinator, analyst, fact-checker — single pass
+_RESEARCHER_MAX_ITER = 2   # 1 search + 1 summary
+_ANALYST_MAX_ITER   = 1   # single-pass extraction + fact-check combined
+_WRITER_MAX_ITER    = 1   # one shot — no tools needed
+_DEFAULT_MAX_ITER   = 1   # coordinator — single pass
 
-# Agent-level RPM cap — 5 agents sharing 30 RPM = 6 each, use 5 to be safe
-_AGENT_MAX_RPM = 5
+# 5 agents sharing a single 12k TPM bucket on Groq's free tier.
+# Each agent is allowed at most 2 RPM to prevent burst exhaustion.
+_AGENT_MAX_RPM = 2
+
+# Inter-agent sleep (seconds) injected between sequential task completions.
+# Groq's TPM window resets every 60 s.  Spreading 5 agent invocations across
+# the minute keeps per-window token usage well under the 12k limit.
+# Coordinator + Researcher burn the most tokens (tool schemas + search results);
+# Analyst/Fact-Checker/Writer are text-only and cheaper.
+_INTER_AGENT_SLEEP = 8   # seconds between consecutive agent completions
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -228,25 +249,41 @@ def _build_crew(run_id: str) -> tuple:
 
     _researcher = Agent(
         role="Researcher",
-        goal=f"Run up to {settings.max_sources} web searches on the topic, then stop and report findings with inline citations.",
-        backstory="Focused web researcher. Run targeted searches, compile findings with citations, then stop.",
+        goal=(
+            f"Run up to {settings.max_sources} web searches on the topic. "
+            "Find AT LEAST 6 distinct named competitor companies. "
+            "For every finding, include the exact URL from the search result as a citation [Source Name](https://...)."
+        ),
+        backstory=(
+            "Expert competitive intelligence researcher. You search broadly to find MANY competitors — "
+            "never stop at 1-2. You always cite sources with the real URL from the search result."
+        ),
         tools=[_search_tool],
         allow_delegation=False,
         verbose=False,
         llm=_researcher_llm,
         max_iter=_RESEARCHER_MAX_ITER,
-        max_retry_limit=1,
+        max_retry_limit=2,
         max_rpm=_AGENT_MAX_RPM,
     )
 
     _analyst = Agent(
         role="Analyst",
-        goal="Extract and classify claims from research. Distinguish verified facts from single-source rumors.",
-        backstory="Sharp market analyst. Read raw research, produce citable claims, flag uncertainty.",
+        goal=(
+            "Extract claims from research AND verify each one in a single pass. "
+            "Cover AT LEAST 5 named competitors with specific pricing/product/market facts. "
+            "Every claim MUST have an inline citation [Source Name](https://real-url). "
+            "Prefix any claim that has no source URL with [UNVERIFIED]."
+        ),
+        backstory=(
+            "Fast, precise market analyst and fact-checker combined. "
+            "You read raw research once, extract verified claims with real URLs, "
+            "and flag anything unsupported — all in one pass."
+        ),
         allow_delegation=False,
         verbose=False,
-        llm=llm,
-        max_iter=_DEFAULT_MAX_ITER,
+        llm=_analyst_llm,
+        max_iter=_ANALYST_MAX_ITER,
         max_rpm=_AGENT_MAX_RPM,
     )
 
@@ -256,15 +293,23 @@ def _build_crew(run_id: str) -> tuple:
         backstory="Meticulous fact-checker. Only verify — do not add new information.",
         allow_delegation=False,
         verbose=False,
-        llm=llm,
+        llm=_analyst_llm,
         max_iter=_DEFAULT_MAX_ITER,
         max_rpm=_AGENT_MAX_RPM,
     )
 
     _writer = Agent(
         role="Writer",
-        goal="Write the final briefing with exactly 3 sections. Every bullet must end with [Source](url).",
-        backstory="Business writer specialising in concise competitive intelligence reports.",
+        goal=(
+            "Write the final briefing with exactly 3 sections covering AT LEAST 6 competitors. "
+            "Every bullet MUST end with [Source Name](https://real-url-from-research.com) — "
+            "use the real URLs from the research, never placeholder text."
+        ),
+        backstory=(
+            "Business writer specialising in concise competitive intelligence reports. "
+            "You write comprehensive reports covering many competitors and always use "
+            "real source URLs in your citations."
+        ),
         allow_delegation=False,
         verbose=False,
         llm=llm,
@@ -277,54 +322,75 @@ def _build_crew(run_id: str) -> tuple:
         description=(
             "Plan a competitive-intelligence briefing on: {topic}\n"
             "Output a brief bullet-point outline for exactly 3 sections:\n"
-            "1. Executive Summary  2. Competitor Pricing & Product Moves  3. Market Signals"
+            "1. Executive Summary  2. Competitor Pricing & Product Moves  3. Market Signals\n"
+            "The briefing must cover AT LEAST 6 named competitors with specific data points."
         ),
-        expected_output="A short bullet-point outline for the 3 sections.",
+        expected_output="A short bullet-point outline for the 3 sections, listing 6+ competitor names to cover.",
         agent=_coordinator,
     )
 
     _research_task = Task(
         description=(
             f"Search for {{topic}} using the search tool. Run at most {settings.max_sources} searches then stop.\n"
-            "Report findings as bullet points with inline citations [Source](url)."
+            "IMPORTANT: Find AT LEAST 6 different named competitor companies with specific facts.\n"
+            "For each finding, format citations as: [Company Name or Publication](https://exact-url-from-search-result)\n"
+            "Always use the actual URL from the search result — never write 'url' as a placeholder.\n"
+            "Report findings as bullet points: each bullet ends with [Source](https://url)"
         ),
-        expected_output="Bullet-point findings with inline citations [Source Name](url).",
+        expected_output=(
+            "Bullet-point findings covering 6+ named competitors, each bullet ending with "
+            "[Source Name](https://real-url.com) using the actual URL from the search results."
+        ),
         agent=_researcher,
         context=[_planning_task],
     )
 
     _analyze_task = Task(
         description=(
-            "Organise the research findings into 3 groups matching the briefing sections.\n"
-            "Keep well-sourced claims as verified. Mark single-source items as uncertain.\n"
-            "Each claim must have an inline citation [Source](url)."
+            "Read the research findings and in ONE pass:\n"
+            "1. Group claims into 3 sections: Executive Summary, Competitor Pricing & Product Moves, Market Signals\n"
+            "2. For each claim copy the exact citation URL from the research: [Source Name](https://real-url)\n"
+            "3. Prefix any claim with NO source URL with [UNVERIFIED]\n"
+            "Cover at least 5 named competitors. Be concise — 3-4 claims per section max."
         ),
-        expected_output="Claims grouped by section with citations and confidence notes.",
+        expected_output=(
+            "Three sections with cited claims. Each claim ends with [Source](https://url). "
+            "Unsourced claims prefixed [UNVERIFIED]."
+        ),
         agent=_analyst,
         context=[_research_task],
     )
 
     _fact_check_task = Task(
         description=(
-            "Check each Analyst claim against the research. "
-            "If a claim has no supporting source in the research, prefix it '[UNVERIFIED]'.\n"
-            "Output the same 3-section structure with [UNVERIFIED] prefixes where needed."
+            "Quick pass: confirm every claim from the Analyst has a citation URL. "
+            "If any claim is missing a URL, prefix it [UNVERIFIED]. "
+            "Do NOT rewrite claims — only add [UNVERIFIED] where needed. "
+            "Output the same 3-section structure unchanged."
         ),
-        expected_output="Three-section claim list with [UNVERIFIED] on unsupported claims.",
+        expected_output="Same 3-section list, [UNVERIFIED] added to any claim missing a URL.",
         agent=_fact_checker,
         context=[_research_task, _analyze_task],
     )
 
     _write_task = Task(
         description=(
-            "Write the final briefing using ONLY the verified findings. Output markdown with EXACTLY these headings:\n\n"
+            "Write the final briefing. Output markdown with EXACTLY these headings:\n\n"
             "## Executive Summary\n## Competitor Pricing & Product Moves\n## Market Signals\n\n"
-            "Rules: 3-5 bullet points per section. Every bullet MUST end with [Source](url).\n"
-            "Executive Summary must include a '- **Recommendation:**' bullet.\n"
-            "Skip any [UNVERIFIED] claims. No preamble or closing remarks.\n\n"
+            "Rules:\n"
+            "- 3-5 bullet points per section\n"
+            "- Every bullet MUST end with [Source Name](https://real-url-from-research)\n"
+            "  Example: [TechCrunch](https://techcrunch.com/2025/06/article)\n"
+            "  NEVER write placeholder URLs like (url) or (link)\n"
+            "- Executive Summary must include a '- **Recommendation:**' bullet\n"
+            "- Skip any [UNVERIFIED] claims\n"
+            "- No preamble or closing remarks\n\n"
             "Topic: {topic}"
         ),
-        expected_output="Markdown briefing with 3 ## sections, each 3-5 bullets ending with [Source](url).",
+        expected_output=(
+            "Markdown briefing: 3 ## sections, 3-5 bullets each, "
+            "every bullet ending with [Source](https://real-url)."
+        ),
         agent=_writer,
         context=[_fact_check_task],
     )
@@ -514,16 +580,23 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # Attach after-completion callbacks to each task (CrewAI Task supports
         # a `callback` kwarg that fires with the task output when done).
         # Use a closure to capture run_id and stage name safely.
+        # We also inject a blocking sleep here to spread consecutive agent
+        # invocations across Groq's 60-second TPM window.  The callback runs
+        # synchronously inside CrewAI's sequential executor, so time.sleep()
+        # is correct (asyncio.sleep would require an event loop we don't own).
         def _make_stage_callback(r_id: str, s_name: str):
+            import time
             def _cb(output):  # noqa: ANN001
                 try:
                     _stage_end(r_id, s_name, "done")
                 except Exception:
                     pass
-                # Brief pause after heavy agents to let the Groq TPM window
-                # breathe before the next agent fires.
-                if s_name in ("Researcher", "Analyst", "Fact-Checker"):
-                    time.sleep(5)
+                # Don't sleep after the final Writer stage — run is done.
+                if s_name != "Writer":
+                    try:
+                        time.sleep(_INTER_AGENT_SLEEP)
+                    except Exception:
+                        pass
             return _cb
 
         try:
@@ -532,7 +605,7 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         except Exception:
             pass  # never block execution for stage tracking
 
-        _MAX_RETRIES = 2
+        _MAX_RETRIES = 3  # litellm handles per-call 429s; this catches crew-level failures
         _attempt = 0
         result = None
         while True:
@@ -567,7 +640,10 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     or "RateLimitError" in exc_str
                 )
                 if is_rate_limit and _attempt < _MAX_RETRIES:
-                    # Extract the actual retry-after from the error message
+                    # Extract the actual retry-after from Groq's error body.
+                    # Groq sends: "Please try again in 42.72s"
+                    # We honour the full value (no cap) so we don't retry
+                    # before the window has actually reset.
                     _ra = re.search(
                         r"(?:try again in|retry.?after)[^\d]*(\d+(?:\.\d+)?)\s*([smh]?)",
                         exc_str, re.IGNORECASE
@@ -577,9 +653,9 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                         _unit = (_ra.group(2) or "s").lower()
                         if _unit == "m": _secs *= 60
                         elif _unit == "h": _secs *= 3600
-                        _retry_after = min(int(_secs) + 2, 65)  # cap at 65s
+                        _retry_after = int(_secs) + 5  # +5s buffer, no upper cap
                     else:
-                        _retry_after = 30
+                        _retry_after = 65  # conservative default — one full minute
                     _attempt += 1
                     logger.warning(
                         "Rate-limited (429) on attempt %d/%d — waiting %ds before retry.",
@@ -734,6 +810,12 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             or "rate_limit" in exc_str.lower()
             or "RateLimitError" in exc_str
         )
+        is_invalid_key = (
+            "401" in exc_str
+            or "invalid_api_key" in exc_str.lower()
+            or "invalid api key" in exc_str.lower()
+            or "authentication" in exc_str.lower()
+        )
         if is_rate_limit:
             # Try to extract the retry-after seconds from the error body
             _ra_match = re.search(
@@ -748,15 +830,16 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             )
         elif "402" in exc_str:
             human_error = f"{_provider_label} billing issue. Check your account at {_provider_link}."
+        elif is_invalid_key:
+            human_error = (
+                f"Invalid {_provider_label} API key. "
+                f"Open your .env file and set a real API key: "
+                f"GROQ_API_KEY=gsk_...  — get yours at {_provider_link}."
+            )
         elif "404" in exc_str and ("model" in exc_str.lower() or "endpoints" in exc_str.lower()):
             human_error = (
                 f"Model not found on {_provider_label}. "
                 f"Check MODEL_NAME in .env — current value: {settings.model_name}."
-            )
-        elif "401" in exc_str:
-            human_error = (
-                f"Invalid {_provider_label} API key. "
-                f"Check your API key in .env and verify it at {_provider_link}."
             )
         elif "failed to call a function" in exc_str.lower() or "failed_generation" in exc_str.lower():
             human_error = (
