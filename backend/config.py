@@ -41,7 +41,6 @@ load_dotenv(_PROJECT_ROOT / ".env", override=True)
 # ---------------------------------------------------------------------------
 
 _REQUIRED_KEYS = (
-    "GROQ_API_KEY",
     "SERPER_API_KEY",
 )
 
@@ -58,8 +57,25 @@ _OPTIONAL_DEFAULTS = {
 
 
 def _validate() -> None:
-    """Raise RuntimeError listing every missing required variable."""
+    """Raise RuntimeError listing every missing required variable.
+
+    Provider-agnostic key validation:
+    - SERPER_API_KEY is always required.
+    - At least one LLM API key must be present.  Accepted combinations:
+        • GENERIC_LLM_API_KEY alone  — works for any provider (Gemini, etc.)
+        • GROQ_API_KEY alone         — works for groq/* models
+        • Both set                   — GENERIC_LLM_API_KEY takes priority for
+                                       gemini/* models; GROQ_API_KEY for others
+    This lets Render (and any deployment) set only GENERIC_LLM_API_KEY without
+    also needing GROQ_API_KEY when switching to a non-Groq provider.
+    """
     missing = [k for k in _REQUIRED_KEYS if not os.getenv(k)]
+
+    has_generic = bool(os.getenv("GENERIC_LLM_API_KEY"))
+    has_groq    = bool(os.getenv("GROQ_API_KEY"))
+    if not has_generic and not has_groq:
+        missing.append("GROQ_API_KEY or GENERIC_LLM_API_KEY")
+
     if missing:
         raise RuntimeError(
             "Missing required environment variables — set them in your .env "
@@ -77,23 +93,41 @@ def _validate() -> None:
 class Settings:
     """Typed, immutable snapshot of the current environment configuration."""
 
-    groq_api_key: str
     serper_api_key: str
     model_name: str
     max_sources: int
     max_steps: int
     max_tokens: int
+    # groq_api_key is None when MODEL_NAME starts with "gemini/".
+    groq_api_key: str = ""
+    # generic_llm_api_key is None when MODEL_NAME does not start with "gemini/".
+    generic_llm_api_key: str = ""
     # PHASE 5 ADDITION — multi-tenant auth pilot flag (off by default).
     # When True a minimal username-only login modal is shown in the frontend.
     # This is a pilot placeholder; set to False for all normal use.
     enable_multi_tenant_auth: bool = False
+
+    @property
+    def llm_api_key(self) -> str:
+        """Return the correct API key for the configured model provider.
+
+        Priority:
+        - gemini/* models  → GENERIC_LLM_API_KEY (required)
+        - all other models → GROQ_API_KEY if set, else GENERIC_LLM_API_KEY
+          (allows deployments that only set GENERIC_LLM_API_KEY to work with
+          any provider without also needing GROQ_API_KEY)
+        """
+        if self.model_name.startswith("gemini/"):
+            return self.generic_llm_api_key
+        return self.groq_api_key or self.generic_llm_api_key
 
 
 def _load_settings() -> Settings:
     """Validate env vars and return a populated Settings instance."""
     _validate()
     return Settings(
-        groq_api_key=os.environ["GROQ_API_KEY"],
+        groq_api_key=os.getenv("GROQ_API_KEY", ""),
+        generic_llm_api_key=os.getenv("GENERIC_LLM_API_KEY", ""),
         serper_api_key=os.environ["SERPER_API_KEY"],
         model_name=os.getenv("MODEL_NAME", _OPTIONAL_DEFAULTS["MODEL_NAME"]),
         max_sources=int(os.getenv("MAX_SOURCES", _OPTIONAL_DEFAULTS["MAX_SOURCES"])),

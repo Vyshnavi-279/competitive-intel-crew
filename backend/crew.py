@@ -131,16 +131,25 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# LLM configuration — Groq via CrewAI's LLM class
+# LLM configuration — provider-agnostic (Groq or Gemini)
 # ---------------------------------------------------------------------------
-# Use settings (which guarantees .env was loaded) instead of bare os.getenv
-# so values like MODEL_NAME, GROQ_API_KEY, and MAX_TOKENS are always correct.
+# settings.llm_api_key resolves to GENERIC_LLM_API_KEY for "gemini/*" models
+# and to GROQ_API_KEY for everything else (e.g. "groq/*").
+# MODEL_NAME drives both which model is called and which key is used, so
+# switching providers only requires changing two .env lines:
+#
+#   # Groq (default)
+#   MODEL_NAME=groq/llama-3.3-70b-versatile
+#   GROQ_API_KEY=gsk_...
+#
+#   # Gemini
+#   MODEL_NAME=gemini/gemini-1.5-flash
+#   GENERIC_LLM_API_KEY=AIza...
 #
 # Groq does not support the 'cache_breakpoint' extra field that CrewAI injects
-# into messages for Anthropic prompt-caching.  When any non-Anthropic provider
-# is configured we monkey-patch mark_cache_breakpoint to be a no-op so the
-# field is never sent, avoiding GroqException "property 'cache_breakpoint' is
-# unsupported".
+# into messages for Anthropic prompt-caching.  Gemini doesn't either.  When
+# any non-Anthropic provider is configured we monkey-patch
+# mark_cache_breakpoint to a no-op so the field is never sent.
 os.environ["LITELLM_DISABLE_PROMPT_CACHING"] = "true"
 
 if "anthropic" not in settings.model_name.lower():
@@ -165,22 +174,43 @@ if "anthropic" not in settings.model_name.lower():
     except (ImportError, AttributeError):
         pass
 
+# Main LLM — used by coordinator, analyst, fact-checker, and writer.
+# use_native=False disables CrewAI's provider auto-detection which tries to
+# import optional packages (e.g. google-genai) even for non-Gemini models.
+# litellm handles all providers correctly without native adapters.
 llm = LLM(
-    model=settings.model_name,          # text-only agents (coordinator, analyst, etc.)
-    api_key=settings.groq_api_key,
+    model=settings.model_name,
+    api_key=settings.llm_api_key,   # resolves to GENERIC_LLM_API_KEY or GROQ_API_KEY
     max_tokens=settings.max_tokens,
 )
 
-# llama-3.1-8b-instant is used exclusively for the Researcher because it
-# generates valid JSON tool calls reliably.  llama-3.3-70b-versatile produces
-# XML-format tool calls that Groq rejects with tool_use_failed.
-# Using 8b-instant only for the one agent that calls a tool keeps the
-# tool-call failure rate near zero while the smarter model handles reasoning.
-_researcher_llm = LLM(
-    model="groq/llama-3.1-8b-instant",
-    api_key=settings.groq_api_key,
-    max_tokens=400,   # researcher only needs short tool calls + a summary
-)
+# ---------------------------------------------------------------------------
+# Researcher LLM — tool-calling agent needs a model that emits valid JSON
+# tool calls.
+#
+# Groq path: llama-3.1-8b-instant reliably emits JSON tool calls; the 70b
+#   model emits XML which Groq rejects.  Hard cap at 500 output tokens to
+#   stay inside the 6000 TPM free-tier limit.
+#
+# Gemini path: the main model handles tool calls natively and correctly, so
+#   we reuse `llm` — no separate model needed.
+# ---------------------------------------------------------------------------
+_is_gemini = settings.model_name.startswith("gemini/")
+
+if _is_gemini:
+    # Gemini models support tool calls on the same model; no separate LLM needed.
+    _researcher_llm = llm
+else:
+    # Groq (or any other non-Gemini provider): use 8b-instant for reliable
+    # JSON tool-call generation.
+    _researcher_llm = LLM(
+        model="groq/llama-3.1-8b-instant",
+        api_key=settings.groq_api_key,
+        # Hard cap at 500 output tokens — the input context (task prompt + 3
+        # search results) consumes ~5000-5500 of the 6000 TPM budget on Groq's
+        # free tier, leaving ~500 tokens for the output without hitting the cap.
+        max_tokens=500,
+    )
 
 # ---------------------------------------------------------------------------
 # Shared tool instances (stateful — counts are read after the run)
@@ -327,8 +357,8 @@ planning_task = Task(
 research_task = Task(
     description=(
         f"Search for information on {{topic}} using the SafeSearch tool.\n\n"
-        f"HARD RULE: Run EXACTLY 5 searches, then STOP. "
-        f"Do NOT run more than 5 searches under any circumstances.\n"
+        f"HARD RULE: Run EXACTLY {settings.max_sources} searches, then STOP. "
+        f"Do NOT run more than {settings.max_sources} searches under any circumstances.\n"
         f"When the tool says 'SEARCH LIMIT REACHED', stop immediately and report findings.\n\n"
         "For each search, pick ONE focused query. Suggested queries:\n"
         "  1. {topic} pricing changes 2025 2026\n"
@@ -338,7 +368,7 @@ research_task = Task(
         "Cite inline with [Source Name](url)."
     ),
     expected_output=(
-        "Exactly 5 searches performed, then a concise list of "
+        f"Exactly {settings.max_sources} searches performed, then a concise list of "
         "bullet-point findings each with an inline citation [Source Name](url)."
     ),
     agent=researcher,
@@ -777,33 +807,52 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
             pass
 
         # ---- Map exception to a human-readable message -------------------
+        # Derive a human-readable provider name and console URL from the
+        # configured model so messages are accurate regardless of provider.
+        _model = settings.model_name
+        if _model.startswith("gemini/"):
+            _provider_name = "Gemini"
+            _console_url   = "https://ai.dev/rate-limit"
+            _key_env       = "GENERIC_LLM_API_KEY"
+        elif _model.startswith("groq/"):
+            _provider_name = "Groq"
+            _console_url   = "https://console.groq.com"
+            _key_env       = "GROQ_API_KEY"
+        else:
+            _provider_name = "LLM provider"
+            _console_url   = "https://openrouter.ai"
+            _key_env       = "GENERIC_LLM_API_KEY"
+
         exc_str = str(exc)
         is_rate_limit = (
             "429" in exc_str
+            or "RESOURCE_EXHAUSTED" in exc_str
             or "rate_limit" in exc_str.lower()
             or "RateLimitError" in exc_str
+            or "quota" in exc_str.lower()
         )
         if is_rate_limit:
-            # Try to extract the retry-after seconds from the error body
+            # Parse retry-after from both Groq ("please try again in Xs") and
+            # Gemini ("retryDelay": "Xs" or "Please retry in Xs") formats.
             _ra_match = re.search(
-                r"(?:retry[_\-]after|please try again in)[\":\s]+(\d+(?:\.\d+)?)",
+                r"(?:retry[_\-]after|please try again in|Please retry in|retryDelay[\":\s]+)[\":\s]*(\d+(?:\.\d+)?)",
                 exc_str, re.IGNORECASE
             )
             _wait = f"~{int(float(_ra_match.group(1)))}s" if _ra_match else "~60s"
             human_error = (
-                f"Groq rate limit reached (retry after {_wait}). "
-                "The free tier allows limited tokens per minute. "
-                "Wait a minute and try again, or upgrade at https://console.groq.com."
+                f"{_provider_name} rate limit reached (retry after {_wait}). "
+                "The free tier allows limited requests per minute. "
+                f"Wait a moment and try again, or check your quota at {_console_url}."
             )
         elif "402" in exc_str:
-            human_error = "Groq billing issue. Check your account at https://console.groq.com."
+            human_error = f"{_provider_name} billing issue. Check your account at {_console_url}."
         elif "404" in exc_str and ("model" in exc_str.lower() or "endpoints" in exc_str.lower()):
             human_error = (
-                "Model not found on Groq. "
-                "Check MODEL_NAME in .env — use groq/llama-3.1-8b-instant."
+                f"Model not found on {_provider_name}. "
+                f"Check MODEL_NAME in .env — current value: {_model}."
             )
-        elif "401" in exc_str:
-            human_error = "Invalid Groq API key. Check GROQ_API_KEY in your .env file."
+        elif "401" in exc_str or "API_KEY_INVALID" in exc_str:
+            human_error = f"Invalid API key. Check {_key_env} in your .env file."
         elif "failed to call a function" in exc_str.lower() or "failed_generation" in exc_str.lower():
             human_error = (
                 "Model failed to generate a valid tool call. "
@@ -812,11 +861,11 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         elif "Crew output contains an error message" in exc_str:
             # Our own guard raised — the inner message is already clean-ish
             human_error = exc_str.replace("Crew output contains an error message: ", "")[:200]
-            # Re-map if it's still a rate-limit string
-            if "RateLimitError" in human_error or "rate_limit" in human_error.lower():
+            # Re-map if it's still a raw rate-limit string
+            if "RateLimitError" in human_error or "RESOURCE_EXHAUSTED" in human_error or "rate_limit" in human_error.lower():
                 human_error = (
-                    "Groq rate limit reached. "
-                    "Wait a minute and try again, or upgrade at https://console.groq.com."
+                    f"{_provider_name} rate limit reached. "
+                    f"Wait a moment and try again, or check your quota at {_console_url}."
                 )
         else:
             human_error = "Run failed due to an unexpected error. Please try again."

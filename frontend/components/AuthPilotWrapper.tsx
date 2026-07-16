@@ -32,11 +32,17 @@ interface AuthPilotWrapperProps {
 }
 
 export function AuthPilotWrapper({ children }: AuthPilotWrapperProps) {
+  // mounted guards all client-only rendering (localStorage, window, fetch).
+  // Until true, we render a stable server-matching skeleton (children only,
+  // no modal) so the server HTML and first client render always match exactly.
+  const [mounted, setMounted] = useState(false);
   // null = loading; false = pilot disabled; true = pilot enabled & needs auth
   const [pilotEnabled, setPilotEnabled] = useState<boolean | null>(null);
   const [username, setUsername] = useState<string | null>(null);
 
   useEffect(() => {
+    setMounted(true);
+
     // Fetch config with a short timeout — if the API is unreachable, fall
     // through to non-pilot mode so a backend outage never locks the UI.
     const controller = new AbortController();
@@ -85,6 +91,13 @@ export function AuthPilotWrapper({ children }: AuthPilotWrapperProps) {
   }
 
   // ---- Render logic -------------------------------------------------------
+
+  // Before hydration completes, render children only — no modal, no
+  // client-read state.  This guarantees the server HTML and the first
+  // client render are byte-for-byte identical (fixes hydration error #418).
+  if (!mounted) {
+    return <>{children}</>;
+  }
 
   // Still fetching config — render children immediately to avoid flash.
   // The modal will only appear if pilot is enabled AND no username is stored.

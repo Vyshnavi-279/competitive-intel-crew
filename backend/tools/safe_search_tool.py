@@ -101,15 +101,15 @@ class SafeSearchTool(BaseTool):
             data = resp.json()
 
             results = []
-            for item in data.get("organic", []):
+            for item in data.get("organic", [])[:5]:  # cap at 5 results per search
                 title   = item.get("title", "")
                 link    = item.get("link", "")
                 snippet = item.get("snippet", "")
-                # Truncate snippet to 150 chars to keep Researcher context
-                # well under Groq's 6000 TPM limit (fix for RateLimitError).
-                # Shape of each result entry is unchanged — just shorter text.
-                if len(snippet) > 150:
-                    snippet = snippet[:150] + "..."
+                # Truncate snippet to 100 chars — keeps each search result compact
+                # so the Researcher's accumulated context stays under the
+                # llama-3.1-8b-instant 6000 TPM hard cap on Groq's free tier.
+                if len(snippet) > 100:
+                    snippet = snippet[:100] + "..."
                 results.append(f"- {title}\n  {link}\n  {snippet}")
 
             self.search_count += 1

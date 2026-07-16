@@ -6,20 +6,22 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GROQ_API_KEY
-        sync: false          # fill in on Render dashboard
+      - key: GENERIC_LLM_API_KEY
+        sync: false          # fill in on Render dashboard (Google AI Studio key)
       - key: SERPER_API_KEY
         sync: false
       - key: MODEL_NAME
-        value: groq/llama-3.3-70b-versatile
+        value: gemini/gemini-2.0-flash
       - key: MAX_TOKENS
-        value: "600"
+        value: "1000"
       - key: MAX_SOURCES
         value: "3"
       - key: MAX_STEPS
-        value: "6"
+        value: "25"
       - key: PYTHON_VERSION
         value: "3.11.0"
+      - key: DB_DIR
+        value: /data         # point SQLite at the persistent disk, not ephemeral storage
     disk:
       name: sqlite-data
       mountPath: /data

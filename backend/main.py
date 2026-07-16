@@ -347,18 +347,50 @@ async def create_run(body: RunRequest) -> Dict[str, Any]:
         if not topic:
             raise HTTPException(status_code=422, detail="topic must not be empty")
 
+        submitted_by = (body.submitted_by or "default_user").strip() or "default_user"
         logger.info("Manual run requested for topic: %s", topic)
+
+        # ---- Pre-save a "running" stub so GET /api/runs/{id} returns 200
+        # immediately after the frontend redirects to the monitor page.
+        # Without this, the frontend poll gets 404 for the entire duration of
+        # the crew run (2–5 min) because save_run() is only called on completion.
+        from uuid import uuid4
+        from datetime import datetime as _dt
+        from backend.models.schemas import Briefing as _Briefing, RunMetadata as _RunMeta
+        _stub_run_id = str(uuid4())
+        _stub = _Briefing(
+            metadata=_RunMeta(
+                run_id=_stub_run_id,
+                topic=topic,
+                started_at=_dt.utcnow(),
+                status="running",
+                triggered_by="manual",
+                submitted_by=submitted_by,
+            )
+        )
+        try:
+            save_run(_stub)
+            log_event(_stub_run_id, "run started")
+        except Exception:
+            pass  # stub save failure must never block the actual run
 
         briefing = await run_briefing(topic, triggered_by="manual")
         run_id = briefing.metadata.run_id
 
-        # PHASE 4: stamp who submitted this run onto the metadata so it's
-        # persisted in the DB and available for analytics.
+        # PHASE 4: stamp who submitted this run onto the metadata.
         try:
-            submitted_by = (body.submitted_by or "default_user").strip() or "default_user"
             briefing.metadata.submitted_by = submitted_by
         except Exception:
             pass  # never break existing flow for new fields
+
+        # If the crew generated its own run_id (different from stub), remove
+        # the stub row and save the real briefing under the crew's run_id.
+        # If they match (future optimisation), just overwrite.
+        if run_id != _stub_run_id:
+            try:
+                delete_run(_stub_run_id)
+            except Exception:
+                pass
 
         # Persist before logging (FK constraint in audit_log).
         save_run(briefing)
