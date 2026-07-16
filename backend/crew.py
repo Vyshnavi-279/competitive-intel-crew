@@ -203,142 +203,151 @@ _DEFAULT_MAX_ITER = 1      # coordinator, analyst, fact-checker — single pass
 _AGENT_MAX_RPM = 5
 
 # ---------------------------------------------------------------------------
-# Agents
+# ---------------------------------------------------------------------------
+# Crew factory — called fresh for every run to avoid the CrewAI
+# "Executor is already running" error that occurs when a module-level
+# singleton crew is reused across concurrent or back-to-back requests.
+# LLM objects (llm, _researcher_llm) are still module-level because they
+# are stateless and cheap to share.
 # ---------------------------------------------------------------------------
 
-coordinator = Agent(
-    role="Coordinator",
-    goal="Plan the competitive-intelligence briefing sections.",
-    backstory="Senior project manager. Never write content — only produce a concise plan.",
-    allow_delegation=False,
-    verbose=False,
-    llm=llm,
-    max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,
-)
+def _build_crew(run_id: str) -> tuple:
+    """Return (crew, task_stage_map) with brand-new Agent/Task/Crew instances."""
 
-researcher = Agent(
-    role="Researcher",
-    goal=f"Run up to {settings.max_sources} web searches on the topic, then stop and report findings with inline citations.",
-    backstory="Focused web researcher. Run targeted searches, compile findings with citations, then stop.",
-    tools=[_search_tool],
-    allow_delegation=False,
-    verbose=False,
-    llm=_researcher_llm,
-    max_iter=_RESEARCHER_MAX_ITER,
-    max_retry_limit=1,
-    max_rpm=_AGENT_MAX_RPM,
-)
+    # ── Agents ──────────────────────────────────────────────────────────────
+    _coordinator = Agent(
+        role="Coordinator",
+        goal="Plan the competitive-intelligence briefing sections.",
+        backstory="Senior project manager. Never write content — only produce a concise plan.",
+        allow_delegation=False,
+        verbose=False,
+        llm=llm,
+        max_iter=_DEFAULT_MAX_ITER,
+        max_rpm=_AGENT_MAX_RPM,
+    )
 
-analyst = Agent(
-    role="Analyst",
-    goal="Extract and classify claims from research. Distinguish verified facts from single-source rumors.",
-    backstory="Sharp market analyst. Read raw research, produce citable claims, flag uncertainty.",
-    allow_delegation=False,
-    verbose=False,
-    llm=llm,
-    max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,
-)
+    _researcher = Agent(
+        role="Researcher",
+        goal=f"Run up to {settings.max_sources} web searches on the topic, then stop and report findings with inline citations.",
+        backstory="Focused web researcher. Run targeted searches, compile findings with citations, then stop.",
+        tools=[_search_tool],
+        allow_delegation=False,
+        verbose=False,
+        llm=_researcher_llm,
+        max_iter=_RESEARCHER_MAX_ITER,
+        max_retry_limit=1,
+        max_rpm=_AGENT_MAX_RPM,
+    )
 
-fact_checker = Agent(
-    role="Fact-Checker",
-    goal="Cross-check every Analyst claim against raw research. Flag uncited claims as [UNVERIFIED].",
-    backstory="Meticulous fact-checker. Only verify — do not add new information.",
-    allow_delegation=False,
-    verbose=False,
-    llm=llm,
-    max_iter=_DEFAULT_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,
-)
+    _analyst = Agent(
+        role="Analyst",
+        goal="Extract and classify claims from research. Distinguish verified facts from single-source rumors.",
+        backstory="Sharp market analyst. Read raw research, produce citable claims, flag uncertainty.",
+        allow_delegation=False,
+        verbose=False,
+        llm=llm,
+        max_iter=_DEFAULT_MAX_ITER,
+        max_rpm=_AGENT_MAX_RPM,
+    )
 
-writer = Agent(
-    role="Writer",
-    goal="Write the final briefing with exactly 3 sections. Every bullet must end with [Source](url).",
-    backstory="Business writer specialising in concise competitive intelligence reports.",
-    allow_delegation=False,
-    verbose=False,
-    llm=llm,
-    max_iter=_WRITER_MAX_ITER,
-    max_rpm=_AGENT_MAX_RPM,
-)
+    _fact_checker = Agent(
+        role="Fact-Checker",
+        goal="Cross-check every Analyst claim against raw research. Flag uncited claims as [UNVERIFIED].",
+        backstory="Meticulous fact-checker. Only verify — do not add new information.",
+        allow_delegation=False,
+        verbose=False,
+        llm=llm,
+        max_iter=_DEFAULT_MAX_ITER,
+        max_rpm=_AGENT_MAX_RPM,
+    )
 
-# ---------------------------------------------------------------------------
-# Tasks
-# ---------------------------------------------------------------------------
+    _writer = Agent(
+        role="Writer",
+        goal="Write the final briefing with exactly 3 sections. Every bullet must end with [Source](url).",
+        backstory="Business writer specialising in concise competitive intelligence reports.",
+        allow_delegation=False,
+        verbose=False,
+        llm=llm,
+        max_iter=_WRITER_MAX_ITER,
+        max_rpm=_AGENT_MAX_RPM,
+    )
 
-planning_task = Task(
-    description=(
-        "Plan a competitive-intelligence briefing on: {topic}\n"
-        "Output a brief bullet-point outline for exactly 3 sections:\n"
-        "1. Executive Summary  2. Competitor Pricing & Product Moves  3. Market Signals"
-    ),
-    expected_output="A short bullet-point outline for the 3 sections.",
-    agent=coordinator,
-)
+    # ── Tasks ────────────────────────────────────────────────────────────────
+    _planning_task = Task(
+        description=(
+            "Plan a competitive-intelligence briefing on: {topic}\n"
+            "Output a brief bullet-point outline for exactly 3 sections:\n"
+            "1. Executive Summary  2. Competitor Pricing & Product Moves  3. Market Signals"
+        ),
+        expected_output="A short bullet-point outline for the 3 sections.",
+        agent=_coordinator,
+    )
 
-research_task = Task(
-    description=(
-        f"Search for {{topic}} using the search tool. Run at most {settings.max_sources} searches then stop.\n"
-        "Report findings as bullet points with inline citations [Source](url)."
-    ),
-    expected_output="Bullet-point findings with inline citations [Source Name](url).",
-    agent=researcher,
-    context=[planning_task],
-)
+    _research_task = Task(
+        description=(
+            f"Search for {{topic}} using the search tool. Run at most {settings.max_sources} searches then stop.\n"
+            "Report findings as bullet points with inline citations [Source](url)."
+        ),
+        expected_output="Bullet-point findings with inline citations [Source Name](url).",
+        agent=_researcher,
+        context=[_planning_task],
+    )
 
-analyze_task = Task(
-    description=(
-        "Organise the research findings into 3 groups matching the briefing sections.\n"
-        "Keep well-sourced claims as verified. Mark single-source items as uncertain.\n"
-        "Each claim must have an inline citation [Source](url)."
-    ),
-    expected_output="Claims grouped by section with citations and confidence notes.",
-    agent=analyst,
-    context=[research_task],
-)
+    _analyze_task = Task(
+        description=(
+            "Organise the research findings into 3 groups matching the briefing sections.\n"
+            "Keep well-sourced claims as verified. Mark single-source items as uncertain.\n"
+            "Each claim must have an inline citation [Source](url)."
+        ),
+        expected_output="Claims grouped by section with citations and confidence notes.",
+        agent=_analyst,
+        context=[_research_task],
+    )
 
-fact_check_task = Task(
-    description=(
-        "Check each Analyst claim against the research. "
-        "If a claim has no supporting source in the research, prefix it '[UNVERIFIED]'.\n"
-        "Output the same 3-section structure with [UNVERIFIED] prefixes where needed."
-    ),
-    expected_output="Three-section claim list with [UNVERIFIED] on unsupported claims.",
-    agent=fact_checker,
-    context=[research_task, analyze_task],
-)
+    _fact_check_task = Task(
+        description=(
+            "Check each Analyst claim against the research. "
+            "If a claim has no supporting source in the research, prefix it '[UNVERIFIED]'.\n"
+            "Output the same 3-section structure with [UNVERIFIED] prefixes where needed."
+        ),
+        expected_output="Three-section claim list with [UNVERIFIED] on unsupported claims.",
+        agent=_fact_checker,
+        context=[_research_task, _analyze_task],
+    )
 
-write_task = Task(
-    description=(
-        "Write the final briefing using ONLY the verified findings. Output markdown with EXACTLY these headings:\n\n"
-        "## Executive Summary\n## Competitor Pricing & Product Moves\n## Market Signals\n\n"
-        "Rules: 3-5 bullet points per section. Every bullet MUST end with [Source](url).\n"
-        "Executive Summary must include a '- **Recommendation:**' bullet.\n"
-        "Skip any [UNVERIFIED] claims. No preamble or closing remarks.\n\n"
-        "Topic: {topic}"
-    ),
-    expected_output=(
-        "Markdown briefing with 3 ## sections, each 3-5 bullets ending with [Source](url)."
-    ),
-    agent=writer,
-    context=[fact_check_task],
-)
+    _write_task = Task(
+        description=(
+            "Write the final briefing using ONLY the verified findings. Output markdown with EXACTLY these headings:\n\n"
+            "## Executive Summary\n## Competitor Pricing & Product Moves\n## Market Signals\n\n"
+            "Rules: 3-5 bullet points per section. Every bullet MUST end with [Source](url).\n"
+            "Executive Summary must include a '- **Recommendation:**' bullet.\n"
+            "Skip any [UNVERIFIED] claims. No preamble or closing remarks.\n\n"
+            "Topic: {topic}"
+        ),
+        expected_output="Markdown briefing with 3 ## sections, each 3-5 bullets ending with [Source](url).",
+        agent=_writer,
+        context=[_fact_check_task],
+    )
 
-# ---------------------------------------------------------------------------
-# Crew
-# ---------------------------------------------------------------------------
-# FIX 1: max_rpm=20 at crew level enforces a global call rate ceiling.
-# FIX 2: All 5 agents/tasks included in the correct sequential order.
+    # ── Crew ─────────────────────────────────────────────────────────────────
+    _crew = Crew(
+        agents=[_coordinator, _researcher, _analyst, _fact_checker, _writer],
+        tasks=[_planning_task, _research_task, _analyze_task, _fact_check_task, _write_task],
+        process=Process.sequential,
+        verbose=False,
+        max_rpm=5,
+        max_execution_time=MAX_EXECUTION_SECONDS,
+    )
 
-crew = Crew(
-    agents=[coordinator, researcher, analyst, fact_checker, writer],
-    tasks=[planning_task, research_task, analyze_task, fact_check_task, write_task],
-    process=Process.sequential,
-    verbose=True,
-    max_rpm=5,   # crew-level ceiling — 5 agents × 5 RPM each = 25 RPM total, under 30 RPM free tier
-    max_execution_time=MAX_EXECUTION_SECONDS,
-)
+    _task_stage_map = [
+        (_planning_task,    "Coordinator"),
+        (_research_task,    "Researcher"),
+        (_analyze_task,     "Analyst"),
+        (_fact_check_task,  "Fact-Checker"),
+        (_write_task,       "Writer"),
+    ]
+
+    return _crew, _task_stage_map
 
 # ---------------------------------------------------------------------------
 # Output parser  (simple heading‑based splitter)
@@ -496,17 +505,10 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
         # litellm.num_retries=3 handles lower-level retries; this outer loop
         # handles full crew-kickoff level 429s that slip through.
 
-        # PHASE 1: Register stage callbacks on each task so we can track
-        # progress without changing the crew's sequential logic.
-        # Each task callback fires AFTER the task completes — we pair it with
-        # a _stage_start call injected before kickoff via a mapping.
-        _TASK_STAGE_MAP = [
-            (planning_task,    "Coordinator"),
-            (research_task,    "Researcher"),
-            (analyze_task,     "Analyst"),
-            (fact_check_task,  "Fact-Checker"),
-            (write_task,       "Writer"),
-        ]
+        # ---- Build a fresh crew for this run --------------------------------
+        # A module-level singleton crew causes "Executor is already running"
+        # on back-to-back or concurrent requests. Build new instances here.
+        crew, _TASK_STAGE_MAP = _build_crew(run_id)
         _stage_desc_map = dict(_STAGE_DEFS)
 
         # Attach after-completion callbacks to each task (CrewAI Task supports
