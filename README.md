@@ -153,5 +153,5 @@ The five test scenarios cover: full pipeline trace, partial source-failure handl
 - # Competitive Intelligence Crew (MarketPulse)
 
 ## 🚀 Live Deployments
-* **Frontend Dashboard (Netlify):** 
+* **Frontend Dashboard (Render):** https://competitive-intel-crew-ai.onrender.com
 * **Backend API Gateway (Render):** *Running live on Render cluster*
