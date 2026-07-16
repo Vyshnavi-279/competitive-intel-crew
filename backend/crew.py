@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import List
 from uuid import uuid4
@@ -326,8 +327,8 @@ planning_task = Task(
 research_task = Task(
     description=(
         f"Search for information on {{topic}} using the SafeSearch tool.\n\n"
-        f"HARD RULE: Run EXACTLY 8 searches, then STOP. "
-        f"Do NOT run more than 8 searches under any circumstances.\n"
+        f"HARD RULE: Run EXACTLY 5 searches, then STOP. "
+        f"Do NOT run more than 5 searches under any circumstances.\n"
         f"When the tool says 'SEARCH LIMIT REACHED', stop immediately and report findings.\n\n"
         "For each search, pick ONE focused query. Suggested queries:\n"
         "  1. {topic} pricing changes 2025 2026\n"
@@ -337,7 +338,7 @@ research_task = Task(
         "Cite inline with [Source Name](url)."
     ),
     expected_output=(
-        "Exactly 8 searches performed, then a concise list of "
+        "Exactly 5 searches performed, then a concise list of "
         "bullet-point findings each with an inline citation [Source Name](url)."
     ),
     agent=researcher,
@@ -608,6 +609,11 @@ async def run_briefing(topic: str, triggered_by: str = "manual") -> Briefing:
                     _stage_end(r_id, s_name, "done")
                 except Exception:
                     pass
+                # Pause after Researcher, Analyst, and Fact-Checker to spread
+                # token usage across time and avoid Groq TPM rate-limit bursts
+                # when the next agent receives the full accumulated context.
+                if s_name in ("Researcher", "Analyst", "Fact-Checker"):
+                    time.sleep(15)
             return _cb
 
         try:
